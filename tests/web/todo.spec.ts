@@ -1,4 +1,4 @@
-import { expect } from '@wdio/globals';
+import { expect, browser } from '@wdio/globals';
 import { TodoPage } from '../../pages/todo.page';
 
 describe('TodoMVC', () => {
@@ -6,6 +6,8 @@ describe('TodoMVC', () => {
 
   beforeEach(async () => {
     await todoPage.goto();
+    await browser.execute('localStorage.clear()');
+    await browser.refresh();
   });
 
   it('should add a new todo item', async () => {

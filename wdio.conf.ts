@@ -16,6 +16,8 @@ const isHeadless = (process.env.HEADLESS ?? 'true').toLowerCase() !== 'false';
 const chromeArgs = [
   '--no-sandbox',
   '--disable-dev-shm-usage',
+  '--disable-gpu',
+  '--remote-debugging-port=0',
   '--window-size=1920,1080',
   ...(isHeadless ? ['--headless=new'] : []),
 ];
