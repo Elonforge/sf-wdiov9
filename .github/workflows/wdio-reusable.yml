@@ -49,6 +49,8 @@ jobs:
   prepare:
     name: Prepare test matrix
     runs-on: windows-latest
+    permissions: {}
+
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
@@ -72,6 +74,8 @@ jobs:
     name: Test — ${{ matrix.target }}
     needs: prepare
     runs-on: windows-latest
+    permissions:
+      contents: read
     timeout-minutes: ${{ inputs.test_timeout }}
     strategy:
       fail-fast: false
@@ -138,6 +142,8 @@ jobs:
     needs: [test]
     if: ${{ !cancelled() }}
     runs-on: windows-latest
+    permissions:
+      contents: read
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -195,6 +201,10 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
     concurrency:
       group: ${{ inputs.concurrency_group }}
       cancel-in-progress: false
