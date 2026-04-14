@@ -202,6 +202,34 @@ jobs:
           Write-Host "Report name: $ReportName"
           npx allure generate merged-allure-results -o allure-report --report-name "$ReportName"
 
+          # Inject SPA route-restoration script into the Allure index.html.
+          # When GitHub Pages serves a 404 for a deep SPA link, our 404.html
+          # stores the route in sessionStorage before redirecting to the report
+          # root. This script reads that stored route and restores it via
+          # history.replaceState so the Allure SPA picks up the correct view.
+          # It must run AFTER the <base> tag is set (by Allure's own script)
+          # but BEFORE the main app JS loads.
+          $indexPath = "allure-report/index.html"
+          if (Test-Path $indexPath) {
+            $spaScript = @'
+          <script>
+          (function(){var r;try{r=sessionStorage.getItem("allure-spa-route")}catch(e){}if(r){try{sessionStorage.removeItem("allure-spa-route")}catch(e){}window.history.replaceState(null,"",window.location.pathname+r)}})();
+          </script>
+          '@
+            # Insert the SPA script right before the app script.
+            # Allure's own scripts appear before <script src="app-*.js">, so
+            # inserting before the app script ensures correct ordering.
+            $html = Get-Content $indexPath -Raw
+            if ($html -match '<script\s+src="app-[^"]+\.js"></script>') {
+              # Insert our script right before the app-*.js script tag
+              $html = $html -replace '(?s)(<script\s+src="app-[^"]+\.js"></script>)', "$spaScript`n    `$1"
+              Set-Content $indexPath -Value $html -NoNewline
+              Write-Host "Injected SPA route-restoration script into index.html"
+            } else {
+              Write-Host "Warning: Could not find injection point in index.html, skipping SPA script injection"
+            }
+          }
+
       - name: Upload merged HTML report
         uses: actions/upload-artifact@v4
         with:
@@ -612,6 +640,10 @@ jobs:
           # 404 because the path doesn't exist as a file. This 404.html
           # intercepts those requests and redirects back to the report's
           # index.html so the Allure SPA can handle the route.
+          #
+          # The SPA route (the portion after the report root) is stored in
+          # sessionStorage so the Allure index.html can restore it via
+          # history.replaceState after the <base> tag is set.
 
           cat > gh-pages/404.html << 'NOTFOUND_EOF'
           <!DOCTYPE html>
@@ -640,6 +672,13 @@ jobs:
                 }
 
                 if (base) {
+                  // Store the SPA route fragment (path after the report root)
+                  // so the Allure index.html can restore it after the page loads
+                  // and the <base> tag is set correctly.
+                  var spaRoute = path.slice(base.length);
+                  if (spaRoute) {
+                    try { sessionStorage.setItem('allure-spa-route', '/' + spaRoute); } catch(e) {}
+                  }
                   // Redirect to the report root, preserving the hash fragment so
                   // any hash-based routing state is kept.
                   loc.replace(base + loc.hash);

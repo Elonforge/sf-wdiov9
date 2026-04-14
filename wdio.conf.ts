@@ -48,6 +48,7 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
       browserName: 'firefox',
       'moz:firefoxOptions': { args: ['-headless'] },
       specs: ['./tests/api/**/*.spec.ts'],
+      exclude: ['./tests/web/**/*.spec.ts'],
     } as WebdriverIO.Capabilities,
   ],
 
