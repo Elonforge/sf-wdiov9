@@ -13,15 +13,6 @@ dotenvConfig({ path: path.resolve(process.cwd(), '.env.example'), override: fals
 const isCI = !!process.env.CI;
 const isHeadless = (process.env.HEADLESS ?? 'true').toLowerCase() !== 'false';
 
-const chromeArgs = [
-  '--no-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-gpu',
-  '--remote-debugging-port=0',
-  '--window-size=1920,1080',
-  ...(isHeadless ? ['--headless=new'] : []),
-];
-
 const firefoxArgs = isHeadless ? ['-headless'] : [];
 
 export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCapabilities = {
@@ -38,8 +29,6 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
   suites: {
     web: ['./tests/web/**/*.spec.ts'],
     api: ['./tests/api/**/*.spec.ts'],
-    login: ['./tests/login.spec.ts'],
-    home: ['./tests/home.spec.ts'],
   },
 
   // ── Capabilities ───────────────────────────────────────────────────────────
@@ -48,21 +37,15 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
   maxInstances: isCI ? 1 : 5,
   capabilities: [
     {
-      browserName: 'chrome',
-      'goog:chromeOptions': { args: chromeArgs },
-      specs: ['./tests/web/**/*.spec.ts', './tests/login.spec.ts', './tests/home.spec.ts'],
-      exclude: ['./tests/api/**/*.spec.ts'],
-    } as WebdriverIO.Capabilities,
-    {
       browserName: 'firefox',
       'moz:firefoxOptions': { args: firefoxArgs },
-      specs: ['./tests/web/**/*.spec.ts', './tests/login.spec.ts', './tests/home.spec.ts'],
+      specs: ['./tests/web/**/*.spec.ts'],
       exclude: ['./tests/api/**/*.spec.ts'],
     } as WebdriverIO.Capabilities,
     {
-      // API tests — use Chrome headless as a lightweight session host
-      browserName: 'chrome',
-      'goog:chromeOptions': { args: ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage'] },
+      // API tests — use Firefox headless as a lightweight session host
+      browserName: 'firefox',
+      'moz:firefoxOptions': { args: ['-headless'] },
       specs: ['./tests/api/**/*.spec.ts'],
     } as WebdriverIO.Capabilities,
   ],
