@@ -169,4 +169,4 @@ install → test (matrix) → report & deploy
 | `axios` | HTTP client for API tests |
 | `dotenv` | Environment variable loading |
 | `typescript` + `ts-node` | TypeScript compilation |
-| `allure-commandline` | Local report generation |
+| `allure` | Allure 3 report generation (CLI) |
