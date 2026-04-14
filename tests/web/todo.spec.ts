@@ -1,10 +1,12 @@
-import { expect } from '@wdio/globals';
+import { expect, browser } from '@wdio/globals';
 import { TodoPage } from '../../pages/todo.page';
 
 describe('TodoMVC', () => {
   const todoPage = new TodoPage();
 
   beforeEach(async () => {
+    await todoPage.goto();
+    await browser.execute('localStorage.clear()');
     await todoPage.goto();
   });
 
