@@ -19,7 +19,7 @@ on:
         type: string
         required: true
       test_suite:
-        description: 'WDIO suite to run (e.g. api, web). Leave empty for all suites.'
+        description: 'WDIO suite(s) to run, comma-separated (e.g. "api", "web", "web,api"). Leave empty for all suites.'
         type: string
         default: ''
       artifact_prefix:
@@ -39,9 +39,20 @@ on:
         type: number
         default: 30
       concurrency_group:
-        description: 'Concurrency group for deploy serialization.'
+        description: >-
+          Deprecated — kept for backwards-compat only. All deploys now share
+          one global group ("gh-pages-deploy") so that pushes to gh-pages from
+          different callers serialise correctly. Value is ignored.
         type: string
-        required: true
+        required: false
+        default: 'gh-pages-deploy'
+      runs_on:
+        description: >-
+          Runner label(s) for the test job. Accepts a single label
+          ("windows-latest") or a JSON array for self-hosted Windows VMs
+          (e.g. '["self-hosted","windows","squad-alpha"]').
+        type: string
+        default: 'windows-latest'
 
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
@@ -73,7 +84,7 @@ jobs:
   test:
     name: Test — ${{ matrix.target }}
     needs: prepare
-    runs-on: windows-latest
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJson(inputs.runs_on) || inputs.runs_on }}
     permissions:
       contents: read
     timeout-minutes: ${{ inputs.test_timeout }}
@@ -112,9 +123,14 @@ jobs:
           # Do NOT override them here — CLI --reporter flags replace the config
           # array, which would drop the video reporter and allure custom options.
 
-          # Build optional --suite flag
+          # Build optional --suite flags (one per comma-separated suite name).
+          # WDIO accepts repeated --suite flags to run multiple suites together.
           $SuiteFlag = @()
-          if ($Suite -ne "") { $SuiteFlag = @("--suite", $Suite) }
+          if ($Suite -ne "") {
+            foreach ($s in ($Suite -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })) {
+              $SuiteFlag += @("--suite", $s)
+            }
+          }
 
           if ($Target -eq "all") {
             npx wdio run wdio.conf.ts @SuiteFlag
@@ -133,10 +149,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_prefix }}-${{ strategy.job-index }}
-          path: |
-            allure-results/
-            test-results/
-            _results_/
+          path: allure-results/
           retention-days: 7
           if-no-files-found: warn
 
@@ -145,23 +158,11 @@ jobs:
     name: Merge reports
     needs: [test]
     if: ${{ !cancelled() }}
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     timeout-minutes: 10
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
       - name: Download all blob report artifacts
         uses: actions/download-artifact@v4
         with:
@@ -172,16 +173,13 @@ jobs:
       - name: Generate Allure HTML report
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path merged-allure-results | Out-Null
-          if (Test-Path all-blob-reports/allure-results) {
-            Copy-Item -Path all-blob-reports/allure-results/* -Destination merged-allure-results/ -Recurse -Force -ErrorAction SilentlyContinue
-          }
-          Get-ChildItem -Path all-blob-reports -Recurse -Include '*.json','*.xml','*.txt','*.png','*.mp4','*.webm' -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match 'allure-results' } |
-            ForEach-Object { Copy-Item $_.FullName -Destination merged-allure-results/ -Force -ErrorAction SilentlyContinue }
-
+          # Artifacts were uploaded with `path: allure-results/`, so
+          # `merge-multiple: true` flattens every shard's contents directly
+          # into `all-blob-reports/`. Use it as the input dir directly —
+          # no extra copy pass, no filename collisions.
+          $mergedDir = "all-blob-reports"
           Write-Host "Merged allure results:"
-          $items = Get-ChildItem merged-allure-results/ -ErrorAction SilentlyContinue
+          $items = Get-ChildItem $mergedDir -ErrorAction SilentlyContinue
           if ($items) { $items | Format-Table -AutoSize } else { Write-Host "  (empty)" }
 
           # Build dynamic report name
@@ -200,33 +198,31 @@ jobs:
           if ($Suffix -ne "") { $ReportName = "$ReportName - $Suffix" }
 
           Write-Host "Report name: $ReportName"
-          npx allure generate merged-allure-results -o allure-report --report-name "$ReportName"
+          # Use allure-commandline directly via npx — no project install needed.
+          npx --yes -p allure-commandline@2 allure generate $mergedDir -o allure-report --report-name "$ReportName"
 
           # Inject SPA route-restoration script into the Allure index.html.
-          # When GitHub Pages serves a 404 for a deep SPA link, our 404.html
-          # stores the route in sessionStorage before redirecting to the report
-          # root. This script reads that stored route and restores it via
-          # history.replaceState so the Allure SPA picks up the correct view.
-          # It must run AFTER the <base> tag is set (by Allure's own script)
-          # but BEFORE the main app JS loads.
+          # Works together with 404.html: a deep-link refresh is redirected by
+          # 404.html to "<reportRoot>/?/<deeppath>", and this snippet rewrites
+          # the URL back to "<reportRoot>/<deeppath>" via history.replaceState
+          # *before* Allure's app JS reads window.location. Based on the
+          # spa-github-pages pattern (rafgraph/spa-github-pages).
           $indexPath = "allure-report/index.html"
           if (Test-Path $indexPath) {
             $spaScript = @'
           <script>
-          (function(){var r;try{r=sessionStorage.getItem("allure-spa-route")}catch(e){}if(r){try{sessionStorage.removeItem("allure-spa-route")}catch(e){}window.history.replaceState(null,"",window.location.pathname+r)}})();
+          (function(l){if(l.search[1]==='/'){var d=l.search.slice(1).split('&').map(function(s){return s.replace(/~and~/g,'&')}).join('?');window.history.replaceState(null,null,l.pathname.slice(0,-1)+d+l.hash)}}(window.location));
           </script>
           '@
-            # Insert the SPA script right before the app script.
-            # Allure's own scripts appear before <script src="app-*.js">, so
-            # inserting before the app script ensures correct ordering.
             $html = Get-Content $indexPath -Raw
-            if ($html -match '<script\s+src="app-[^"]+\.js"></script>') {
-              # Insert our script right before the app-*.js script tag
-              $html = $html -replace '(?s)(<script\s+src="app-[^"]+\.js"></script>)', "$spaScript`n    `$1"
+            # Inject at the very top of <head> so the URL is rewritten before
+            # Allure's own scripts read window.location.
+            if ($html -match '<head[^>]*>') {
+              $html = $html -replace '(<head[^>]*>)', "`$1`n$spaScript"
               Set-Content $indexPath -Value $html -NoNewline
               Write-Host "Injected SPA route-restoration script into index.html"
             } else {
-              Write-Host "Warning: Could not find injection point in index.html, skipping SPA script injection"
+              Write-Host "Warning: Could not find <head> in index.html, skipping SPA script injection"
             }
           }
 
@@ -246,15 +242,20 @@ jobs:
   deploy-report:
     name: Deploy report to Pages
     needs: [merge-reports]
-    if: ${{ !cancelled() }}
+    # Only deploy when merge-reports actually produced a report. Prevents
+    # overwriting /latest/ with an empty directory if every matrix leg errored.
+    if: ${{ always() && needs.merge-reports.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
       pages: write
       id-token: write
+    # Single shared group so deploys across all callers serialise on gh-pages.
+    # The caller's `concurrency_group` input is kept for backwards-compat but
+    # is no longer used for ordering — all deploys contend for one slot.
     concurrency:
-      group: ${{ inputs.concurrency_group }}
+      group: gh-pages-deploy
       cancel-in-progress: false
     environment:
       name: github-pages
@@ -331,9 +332,12 @@ jobs:
           mkdir -p gh-pages/latest
           rsync -a --delete new-report/ gh-pages/latest/
 
-          # ── Prune history: keep only last 20 entries ───────────────────────
+          # ── Prune history: keep last 20 entries by timestamp ───────────────
+          # Folder name is "<env>--<func>--<YYYY-MM-DD_HH-MM-SS>". Sort by
+          # the timestamp suffix (last '--' segment) so we keep the 20 most
+          # recent runs regardless of which env they belong to.
           cd gh-pages/history
-          DIRS=$(ls -d */ 2>/dev/null | sort || true)
+          DIRS=$(ls -d */ 2>/dev/null | sed 's:/$::' | awk -F'--' '{print $NF"\t"$0}' | sort | cut -f2- || true)
           COUNT=$(echo "$DIRS" | grep -c . || true)
           if [ "$COUNT" -gt 20 ]; then
             REMOVE=$((COUNT - 20))
@@ -652,17 +656,21 @@ jobs:
             <meta charset="utf-8"/>
             <title>Redirecting…</title>
             <script>
+              // spa-github-pages style redirect.
+              // Rewrites the URL so the report root (which exists on disk and
+              // serves Allure's index.html) is loaded, with the deep path
+              // encoded as ?/<path>. The twin snippet in the Allure index.html
+              // then restores the URL via history.replaceState *before* the
+              // Allure app JS boots, so the SPA router picks up the right view.
               (function () {
-                var loc  = window.location;
-                var path = loc.pathname;
+                var l = window.location;
+                var path = l.pathname;
 
-                // Known Allure-report directory patterns deployed by this workflow.
-                // Each regex captures the report root (the directory that contains
-                // the Allure index.html).
+                // Report root patterns — captures include the trailing slash.
                 var patterns = [
-                  /^(\/[^/]+\/runs\/[^/]+\/[^/]+\/)/,   // /<repo>/runs/<wf>/<id>/
-                  /^(\/[^/]+\/history\/[^/]+\/)/,        // /<repo>/history/<name>/
-                  /^(\/[^/]+\/latest\/)/                  // /<repo>/latest/
+                  /^(\/[^/]+\/runs\/[^/]+\/[^/]+\/)/,    // /<repo>/runs/<wf>/<id>/
+                  /^(\/[^/]+\/history\/[^/]+\/)/,         // /<repo>/history/<name>/
+                  /^(\/[^/]+\/latest\/)/                   // /<repo>/latest/
                 ];
 
                 var base;
@@ -672,20 +680,17 @@ jobs:
                 }
 
                 if (base) {
-                  // Store the SPA route fragment (path after the report root)
-                  // so the Allure index.html can restore it after the page loads
-                  // and the <base> tag is set correctly.
-                  var spaRoute = path.slice(base.length);
-                  if (spaRoute) {
-                    try { sessionStorage.setItem('allure-spa-route', '/' + spaRoute); } catch(e) {}
-                  }
-                  // Redirect to the report root, preserving the hash fragment so
-                  // any hash-based routing state is kept.
-                  loc.replace(base + loc.hash);
+                  var rest = path.slice(base.length);
+                  l.replace(
+                    l.protocol + '//' + l.host + base + '?/' +
+                    rest.replace(/&/g, '~and~') +
+                    (l.search ? '&' + l.search.slice(1).replace(/&/g, '~and~') : '') +
+                    l.hash
+                  );
                 } else {
-                  // Unrecognised path – fall back to the site dashboard.
+                  // Unknown path – fall back to the dashboard root.
                   var repoBase = path.match(/^(\/[^/]+\/)/);
-                  loc.replace(repoBase ? repoBase[1] : '/');
+                  l.replace(repoBase ? repoBase[1] : '/');
                 }
               })();
             </script>
