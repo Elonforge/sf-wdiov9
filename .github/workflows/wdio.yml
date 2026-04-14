@@ -4,24 +4,11 @@ name: WebDriverIO Tests
 # duplicates — choose suite or supply targets via workflow_dispatch inputs.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'tests/**'
-      - 'pages/**'
-      - 'wdio.conf.ts'
-      - 'package.json'
-      - '.github/workflows/wdio.yml'
-      - '.github/workflows/wdio-reusable.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'tests/**'
-      - 'pages/**'
-      - 'wdio.conf.ts'
-      - 'package.json'
-      - '.github/workflows/wdio.yml'
-      - '.github/workflows/wdio-reusable.yml'
+  # Manual-only by design: any tester, on any branch, can dispatch this from
+  # the Actions tab (Actions → "WebDriverIO Tests" → "Run workflow" → pick
+  # branch). This avoids polluting the published report site with a deploy
+  # for every branch push. If you want CI smoke runs on push to main, add a
+  # separate trigger here scoped to `branches: [main]`.
   workflow_dispatch:
     inputs:
       test_env:

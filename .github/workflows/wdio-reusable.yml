@@ -313,14 +313,37 @@ jobs:
           fi
 
           TIMESTAMP=$(date -u +"%Y-%m-%d_%H-%M-%S")
-          FOLDER_NAME="${ENV_NAME}--${FUNC_NAME}--${TIMESTAMP}"
+
+          # Sanitize branch + actor for use in folder name.
+          # Branch may be "feature/foo-bar" → "feature-foo-bar".
+          BRANCH_RAW="${{ github.ref_name }}"
+          BRANCH=$(echo "$BRANCH_RAW" | sed 's/[^a-zA-Z0-9_-]/-/g')
+          [ -z "$BRANCH" ] && BRANCH="unknown"
+
+          ACTOR_RAW="${{ github.actor }}"
+          ACTOR=$(echo "$ACTOR_RAW" | sed 's/[^a-zA-Z0-9_-]/-/g')
+          [ -z "$ACTOR" ] && ACTOR="unknown"
+
+          SHA7="$(echo "${{ github.sha }}" | cut -c1-7)"
+          [ -z "$SHA7" ] && SHA7="0000000"
+
+          # History folder identifies the run completely:
+          #   <env>--<func>--<branch>--<actor>--<sha7>--<timestamp>
+          FOLDER_NAME="${ENV_NAME}--${FUNC_NAME}--${BRANCH}--${ACTOR}--${SHA7}--${TIMESTAMP}"
           RUN_ID="${{ github.run_id }}"
           WORKFLOW="${{ inputs.workflow_name }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          IS_DEFAULT_BRANCH="false"
+          if [ "${{ github.ref }}" = "refs/heads/${DEFAULT_BRANCH}" ]; then
+            IS_DEFAULT_BRANCH="true"
+          fi
 
-          echo "History folder : $FOLDER_NAME"
-          echo "Stable run URL : /runs/${WORKFLOW}/${RUN_ID}/"
+          echo "History folder    : $FOLDER_NAME"
+          echo "Stable run URL    : /runs/${WORKFLOW}/${RUN_ID}/"
+          echo "Default branch?   : $IS_DEFAULT_BRANCH"
 
-          # ── Copy report into per-run-ID folder (stable URL) ────────────────
+          # ── Copy report into per-run-ID folder (stable URL, never pruned
+          #    by date — pruned only when its history entry ages out below) ──
           mkdir -p "gh-pages/runs/${WORKFLOW}/${RUN_ID}"
           rsync -a --exclude='*.zip' new-report/ "gh-pages/runs/${WORKFLOW}/${RUN_ID}/"
 
@@ -328,38 +351,39 @@ jobs:
           mkdir -p "gh-pages/history/${FOLDER_NAME}"
           rsync -a --exclude='*.zip' new-report/ "gh-pages/history/${FOLDER_NAME}/"
 
-          # ── Copy as "latest" under /latest/ ────────────────────────────────
-          mkdir -p gh-pages/latest
-          rsync -a --delete new-report/ gh-pages/latest/
-
-          # ── Prune history: keep last 20 entries by timestamp ───────────────
-          # Folder name is "<env>--<func>--<YYYY-MM-DD_HH-MM-SS>". Sort by
-          # the timestamp suffix (last '--' segment) so we keep the 20 most
-          # recent runs regardless of which env they belong to.
-          cd gh-pages/history
-          DIRS=$(ls -d */ 2>/dev/null | sed 's:/$::' | awk -F'--' '{print $NF"\t"$0}' | sort | cut -f2- || true)
-          COUNT=$(echo "$DIRS" | grep -c . || true)
-          if [ "$COUNT" -gt 20 ]; then
-            REMOVE=$((COUNT - 20))
-            echo "$DIRS" | head -n "$REMOVE" | while read -r d; do
-              echo "Pruning old history entry: $d"
-              rm -rf "$d"
-            done
+          # ── Copy as "latest" only on default-branch runs ───────────────────
+          # Feature-branch / dev-stream runs must NOT move /latest/.
+          if [ "$IS_DEFAULT_BRANCH" = "true" ]; then
+            mkdir -p gh-pages/latest
+            rsync -a --delete new-report/ gh-pages/latest/
+            echo "Updated /latest/ (default-branch run)"
+          else
+            echo "Skipped /latest/ update (non-default branch)"
           fi
+
+          # ── Prune history: delete entries older than 60 days ───────────────
+          # Folder name ends in "--YYYY-MM-DD_HH-MM-SS". Compare against a
+          # cutoff timestamp (UTC) computed once.
+          CUTOFF=$(date -u -d '60 days ago' +"%Y-%m-%d_%H-%M-%S" 2>/dev/null || \
+                   date -u -v-60d +"%Y-%m-%d_%H-%M-%S")
+          echo "Pruning history entries older than: $CUTOFF"
+          cd gh-pages/history
+          for d in */; do
+            d="${d%/}"
+            ts="${d##*--}"
+            if [[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] && \
+               [[ "$ts" < "$CUTOFF" ]]; then
+              echo "Pruning old history entry: $d (ts=$ts)"
+              rm -rf "$d"
+            fi
+          done
           cd ../..
 
-          # ── Prune runs: keep only last 20 per workflow ─────────────────────
+          # ── Prune runs: delete run-ID folders whose mtime is > 60 days ─────
+          # Run-ID folders have no timestamp in the name, so use mtime instead.
           if [ -d "gh-pages/runs/${WORKFLOW}" ]; then
             cd "gh-pages/runs/${WORKFLOW}"
-            DIRS=$(ls -d */ 2>/dev/null | sort -n || true)
-            COUNT=$(echo "$DIRS" | grep -c . || true)
-            if [ "$COUNT" -gt 20 ]; then
-              REMOVE=$((COUNT - 20))
-              echo "$DIRS" | head -n "$REMOVE" | while read -r d; do
-                echo "Pruning old run entry: $d"
-                rm -rf "$d"
-              done
-            fi
+            find . -maxdepth 1 -mindepth 1 -type d -mtime +60 -print -exec rm -rf {} +
             cd ../../..
           fi
 
@@ -428,9 +452,10 @@ jobs:
             </div>
 
             <hr/>
-            <h3>Recent Runs</h3>
+            <h3>Recent Runs <small style="font-weight:400;color:#888">(last 10 — filter to find your own)</small></h3>
+            <input id="filter" type="search" placeholder="Filter by branch, actor, env, func…" style="width:100%;padding:.6rem .8rem;margin-bottom:.75rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem"/>
             <table>
-              <thead><tr><th>Environment</th><th>Functionality</th><th>Date &amp; Time (UTC)</th><th>Report</th></tr></thead>
+              <thead><tr><th>Env</th><th>Func</th><th>Branch</th><th>Actor</th><th>Commit</th><th>Date (UTC)</th><th>Report</th></tr></thead>
               <tbody id="recent"></tbody>
             </table>
 
@@ -440,7 +465,7 @@ jobs:
           # Inject the entries array from the history folder
           echo '      const entries = [' >> gh-pages/index.html
           if [ -d gh-pages/history ]; then
-            ls -d gh-pages/history/*/ 2>/dev/null | sort -r | head -10 | while read -r d; do
+            ls -d gh-pages/history/*/ 2>/dev/null | sed 's:/$::' | awk -F'--' '{print $NF"\t"$0}' | sort -r | cut -f2- | head -10 | while read -r d; do
               name=$(basename "$d")
               echo "        \"${name}\"," >> gh-pages/index.html
             done
@@ -448,34 +473,58 @@ jobs:
           echo '      ];' >> gh-pages/index.html
 
           cat >> gh-pages/index.html << 'DASHBOARD_JS_EOF'
-              const tbody = document.getElementById('recent');
-              entries.forEach(name => {
+              // Folder name format:
+              //   <env>--<func>--<branch>--<actor>--<sha7>--<YYYY-MM-DD_HH-MM-SS>
+              // Older 3-segment entries (<env>--<func>--<ts>) are still parsed.
+              function parseEntry(name) {
                 const parts = name.split('--');
-                let env, func, displayTs;
-                if (parts.length >= 3) {
-                  env = parts[0] || '';
+                const ts = parts[parts.length - 1] || '';
+                let env = '', func = '', branch = '', actor = '', sha = '';
+                if (parts.length >= 6) {
+                  env    = parts[0];
+                  func   = parts.slice(1, parts.length - 4).join(', ');
+                  branch = parts[parts.length - 4];
+                  actor  = parts[parts.length - 3];
+                  sha    = parts[parts.length - 2];
+                } else if (parts.length >= 3) {
+                  env  = parts[0];
                   func = parts.slice(1, -1).join(', ');
-                  const ts = parts[parts.length - 1] || '';
-                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, o, s) => o > 9 ? ':' : '-');
                 } else {
                   env = parts[0] || '—';
                   func = parts[1] || '—';
-                  displayTs = '';
                 }
-                const envClass = ['dev','staging','prod'].includes(env) ? 'env-' + env : 'env-default';
-                const tr = document.createElement('tr');
-                tr.innerHTML =
-                  '<td><span class="env-badge ' + envClass + '">' + env + '</span></td>' +
-                  '<td>' + func.replace(/\+/g, ', ') + '</td>' +
-                  '<td>' + displayTs + '</td>' +
-                  '<td><a href="history/' + name + '/">View</a></td>';
-                tbody.appendChild(tr);
-              });
-              if (!entries.length) {
-                const tr = document.createElement('tr');
-                tr.innerHTML = '<td colspan="4" style="text-align:center">No reports yet.</td>';
-                tbody.appendChild(tr);
+                const displayTs = ts.replace('_', ' ').replace(/-/g, (m, o) => o > 9 ? ':' : '-');
+                return { env, func, branch, actor, sha, displayTs };
               }
+              const tbody = document.getElementById('recent');
+              function render(filter) {
+                tbody.innerHTML = '';
+                const f = (filter || '').toLowerCase();
+                let shown = 0;
+                entries.forEach(name => {
+                  if (f && name.toLowerCase().indexOf(f) === -1) return;
+                  const e = parseEntry(name);
+                  const envClass = ['dev','staging','prod'].includes(e.env) ? 'env-' + e.env : 'env-default';
+                  const tr = document.createElement('tr');
+                  tr.innerHTML =
+                    '<td><span class="env-badge ' + envClass + '">' + e.env + '</span></td>' +
+                    '<td>' + (e.func || '—').replace(/\+/g, ', ') + '</td>' +
+                    '<td>' + (e.branch || '—') + '</td>' +
+                    '<td>' + (e.actor || '—') + '</td>' +
+                    '<td><code>' + (e.sha || '—') + '</code></td>' +
+                    '<td>' + e.displayTs + '</td>' +
+                    '<td><a href="history/' + name + '/">View</a></td>';
+                  tbody.appendChild(tr);
+                  shown++;
+                });
+                if (!shown) {
+                  const tr = document.createElement('tr');
+                  tr.innerHTML = '<td colspan="7" style="text-align:center">No matching reports.</td>';
+                  tbody.appendChild(tr);
+                }
+              }
+              render('');
+              document.getElementById('filter').addEventListener('input', e => render(e.target.value));
             </script>
           </body>
           </html>
@@ -510,10 +559,11 @@ jobs:
             </style>
           </head>
           <body>
-            <h1>📊 Test Report History</h1>
+            <h1>📊 Test Report History <small style="font-weight:400;color:#888">(60 days retained)</small></h1>
             <a class="back" href="../">← Dashboard</a>
+            <input id="filter" type="search" placeholder="Filter by branch, actor, env, func, commit…" style="width:100%;padding:.6rem .8rem;margin-bottom:.75rem;border:1px solid #ccc;border-radius:6px;font-size:.9rem"/>
             <table>
-              <thead><tr><th>Environment</th><th>Functionality</th><th>Date &amp; Time (UTC)</th><th>Report</th></tr></thead>
+              <thead><tr><th>Env</th><th>Func</th><th>Branch</th><th>Actor</th><th>Commit</th><th>Date (UTC)</th><th>Report</th></tr></thead>
               <tbody id="entries"></tbody>
             </table>
             <script>
@@ -521,7 +571,7 @@ jobs:
 
           echo '      const entries = [' >> gh-pages/history/index.html
           if [ -d gh-pages/history ]; then
-            ls -d gh-pages/history/*/ 2>/dev/null | sort -r | while read -r d; do
+            ls -d gh-pages/history/*/ 2>/dev/null | sed 's:/$::' | awk -F'--' '{print $NF"\t"$0}' | sort -r | cut -f2- | while read -r d; do
               name=$(basename "$d")
               echo "        \"${name}\"," >> gh-pages/history/index.html
             done
@@ -529,35 +579,55 @@ jobs:
           echo '      ];' >> gh-pages/history/index.html
 
           cat >> gh-pages/history/index.html << 'HIST_JS_EOF'
-              const tbody = document.getElementById('entries');
-              entries.forEach(name => {
-                let env, func, displayTs;
-                if (name.startsWith('run-')) {
-                  env = '—';
-                  func = name.split('--')[0] || name;
-                  const ts = name.split('--')[1] || '';
-                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, o, s) => o > 9 ? ':' : '-');
+              function parseEntry(name) {
+                const parts = name.split('--');
+                const ts = parts[parts.length - 1] || '';
+                let env = '', func = '', branch = '', actor = '', sha = '';
+                if (parts.length >= 6) {
+                  env    = parts[0];
+                  func   = parts.slice(1, parts.length - 4).join(', ');
+                  branch = parts[parts.length - 4];
+                  actor  = parts[parts.length - 3];
+                  sha    = parts[parts.length - 2];
+                } else if (parts.length >= 3) {
+                  env  = parts[0];
+                  func = parts.slice(1, -1).join(', ');
                 } else {
-                  const parts = name.split('--');
-                  env = parts[0] || '';
-                  func = parts.length > 2 ? parts.slice(1, -1).join(', ') : (parts[1] || '');
-                  const ts = parts[parts.length - 1] || '';
-                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, o, s) => o > 9 ? ':' : '-');
+                  env = parts[0] || '—';
+                  func = parts[1] || '—';
                 }
-                const envClass = ['dev','staging','prod'].includes(env) ? 'env-' + env : 'env-default';
-                const tr = document.createElement('tr');
-                tr.innerHTML =
-                  '<td><span class="badge ' + envClass + '">' + env + '</span></td>' +
-                  '<td>' + func.replace(/\+/g, ', ') + '</td>' +
-                  '<td>' + displayTs + '</td>' +
-                  '<td><a href="' + name + '/">View Report</a></td>';
-                tbody.appendChild(tr);
-              });
-              if (!entries.length) {
-                const tr = document.createElement('tr');
-                tr.innerHTML = '<td colspan="4" style="text-align:center">No history entries yet.</td>';
-                tbody.appendChild(tr);
+                const displayTs = ts.replace('_', ' ').replace(/-/g, (m, o) => o > 9 ? ':' : '-');
+                return { env, func, branch, actor, sha, displayTs };
               }
+              const tbody = document.getElementById('entries');
+              function render(filter) {
+                tbody.innerHTML = '';
+                const f = (filter || '').toLowerCase();
+                let shown = 0;
+                entries.forEach(name => {
+                  if (f && name.toLowerCase().indexOf(f) === -1) return;
+                  const e = parseEntry(name);
+                  const envClass = ['dev','staging','prod'].includes(e.env) ? 'env-' + e.env : 'env-default';
+                  const tr = document.createElement('tr');
+                  tr.innerHTML =
+                    '<td><span class="badge ' + envClass + '">' + e.env + '</span></td>' +
+                    '<td>' + (e.func || '—').replace(/\+/g, ', ') + '</td>' +
+                    '<td>' + (e.branch || '—') + '</td>' +
+                    '<td>' + (e.actor || '—') + '</td>' +
+                    '<td><code>' + (e.sha || '—') + '</code></td>' +
+                    '<td>' + e.displayTs + '</td>' +
+                    '<td><a href="' + name + '/">View Report</a></td>';
+                  tbody.appendChild(tr);
+                  shown++;
+                });
+                if (!shown) {
+                  const tr = document.createElement('tr');
+                  tr.innerHTML = '<td colspan="7" style="text-align:center">No matching entries.</td>';
+                  tbody.appendChild(tr);
+                }
+              }
+              render('');
+              document.getElementById('filter').addEventListener('input', e => render(e.target.value));
             </script>
           </body>
           </html>
