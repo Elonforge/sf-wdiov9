@@ -133,6 +133,7 @@ jobs:
           path: |
             allure-results/
             test-results/
+            _results_/
           retention-days: 7
           if-no-files-found: warn
 
@@ -172,7 +173,7 @@ jobs:
           if (Test-Path all-blob-reports/allure-results) {
             Copy-Item -Path all-blob-reports/allure-results/* -Destination merged-allure-results/ -Recurse -Force -ErrorAction SilentlyContinue
           }
-          Get-ChildItem -Path all-blob-reports -Recurse -Include '*.json','*.xml','*.txt','*.png' -ErrorAction SilentlyContinue |
+          Get-ChildItem -Path all-blob-reports -Recurse -Include '*.json','*.xml','*.txt','*.png','*.mp4','*.webm' -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -match 'allure-results' } |
             ForEach-Object { Copy-Item $_.FullName -Destination merged-allure-results/ -Force -ErrorAction SilentlyContinue }
 
@@ -273,11 +274,11 @@ jobs:
 
           # ── Copy report into per-run-ID folder (stable URL) ────────────────
           mkdir -p "gh-pages/runs/${WORKFLOW}/${RUN_ID}"
-          rsync -a --exclude='*.webm' --exclude='*.zip' new-report/ "gh-pages/runs/${WORKFLOW}/${RUN_ID}/"
+          rsync -a --exclude='*.zip' new-report/ "gh-pages/runs/${WORKFLOW}/${RUN_ID}/"
 
           # ── Copy into descriptive history folder ───────────────────────────
           mkdir -p "gh-pages/history/${FOLDER_NAME}"
-          rsync -a --exclude='*.webm' --exclude='*.zip' new-report/ "gh-pages/history/${FOLDER_NAME}/"
+          rsync -a --exclude='*.zip' new-report/ "gh-pages/history/${FOLDER_NAME}/"
 
           # ── Copy as "latest" under /latest/ ────────────────────────────────
           mkdir -p gh-pages/latest

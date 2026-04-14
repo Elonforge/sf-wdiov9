@@ -1,6 +1,7 @@
 import type { Options, Capabilities } from '@wdio/types';
 import { config as dotenvConfig } from 'dotenv';
 import path from 'path';
+import video from 'wdio-video-reporter';
 
 // ── dotenv fallback chain ────────────────────────────────────────────────────
 // 1. Load .env.{TEST_ENV} (defaults to "dev") — may not exist, that's OK
@@ -75,6 +76,15 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
         outputDir: 'allure-results',
         disableWebdriverStepsReporting: false,
         disableWebdriverScreenshotsReporting: false,
+      },
+    ],
+    [
+      video,
+      {
+        outputDir: '_results_',
+        saveAllVideos: true,
+        videoSlowdownMultiplier: 3,
+        videoFormat: 'mp4',
       },
     ],
   ],
