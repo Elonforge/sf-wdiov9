@@ -7,7 +7,7 @@ describe('TodoMVC', () => {
   beforeEach(async () => {
     await todoPage.goto();
     await browser.execute('localStorage.clear()');
-    await todoPage.goto();
+    await browser.refresh();
   });
 
   it('should add a new todo item', async () => {
