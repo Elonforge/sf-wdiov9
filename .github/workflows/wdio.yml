@@ -201,7 +201,7 @@ jobs:
           Get-ChildItem -Path new-report -Recurse -File |
             Where-Object { $_.Extension -notin @('.webm', '.zip') } |
             ForEach-Object {
-              $relativePath = $_.FullName.Substring((Resolve-Path new-report).Path.Length)
+              $relativePath = $_.FullName.Substring((Resolve-Path new-report).Path.Length).TrimStart('\/')
               $destPath = Join-Path "site/history/$FolderName" $relativePath
               $destDir = Split-Path $destPath -Parent
               if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
@@ -216,7 +216,7 @@ jobs:
             $HistoryLink = '<a href="history/" style="position:fixed;bottom:20px;right:20px;z-index:9999;background:#1a73e8;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-family:sans-serif;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,0.2);">📊 History</a>'
             $content = Get-Content site/index.html -Raw
             $content = $content -replace '</body>', "${HistoryLink}</body>"
-            Set-Content -Path site/index.html -Value $content -NoNewline
+            Set-Content -Path site/index.html -Value $content
           }
 
           # ── Prune history: keep only last 20 entries ──
