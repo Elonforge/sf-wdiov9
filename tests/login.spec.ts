@@ -1,3 +1,4 @@
+import { $, expect } from '@wdio/globals';
 import { LoginPage } from '../pages/login.page';
 
 /**
