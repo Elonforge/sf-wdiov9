@@ -14,6 +14,15 @@ on:
         required: false
         default: 'dev'
         type: string
+      targets:
+        description: >-
+          Comma-separated test targets to run in parallel.
+          Each entry can be a file (tests/web/todo.spec.ts), a directory
+          (tests/api/), or a @tag passed via --grep.
+          Leave empty to run all tests.
+        required: false
+        default: ''
+        type: string
   schedule:
     # Run smoke tests daily at 06:00 UTC
     - cron: '0 6 * * *'
@@ -25,11 +34,38 @@ permissions:
 
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
-  # ── Job 1: smoke – Quick end-to-end smoke run (all tests, no matrix) ───────
+  # ── Job 1: prepare – Build the matrix from comma-separated input ───────────
+  prepare:
+    name: Prepare test matrix
+    runs-on: windows-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Build matrix
+        id: set-matrix
+        shell: pwsh
+        run: |
+          $Targets = "${{ github.event.inputs.targets }}"
+          if ([string]::IsNullOrWhiteSpace($Targets)) {
+            $Matrix = '["all"]'
+          } else {
+            $items = $Targets -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+            $Matrix = $items | ConvertTo-Json -Compress
+            if ($Matrix -notmatch '^\[') { $Matrix = "[$Matrix]" }
+          }
+          "matrix=$Matrix" | Out-File -Append -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+          Write-Host "Matrix: $Matrix"
+
+  # ── Job 2: smoke – Run tests in parallel (one job per matrix target) ───────
   smoke:
-    name: Smoke Test
+    name: Smoke Test — ${{ matrix.target }}
+    needs: prepare
     runs-on: windows-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -54,13 +90,25 @@ jobs:
         env:
           TEST_ENV: ${{ github.event.inputs.test_env || 'dev' }}
         run: |
-          npx wdio run wdio.conf.ts --reporter=spec --reporter=allure
+          $Target = "${{ matrix.target }}"
+          $Reporters = @("--reporter=spec", "--reporter=allure")
+          if ($Target -eq "all") {
+            npx wdio run wdio.conf.ts @Reporters
+          } elseif ($Target.StartsWith("@")) {
+            npx wdio run wdio.conf.ts --mochaOpts.grep $Target @Reporters
+          } else {
+            # Ensure directory paths get a proper glob pattern
+            if (-not ($Target -match '\.\w+$')) {
+              $Target = $Target.TrimEnd('/\') + "/**/*.spec.ts"
+            }
+            npx wdio run wdio.conf.ts --spec $Target @Reporters
+          }
 
       - name: Upload blob report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: blob-report-smoke-0
+          name: blob-report-smoke-${{ strategy.job-index }}
           path: |
             allure-results/
             test-results/
@@ -139,6 +187,7 @@ jobs:
           path: new-report
 
       - name: Checkout gh-pages branch
+        id: checkout-gh-pages
         uses: actions/checkout@v4
         with:
           ref: gh-pages
@@ -147,17 +196,17 @@ jobs:
         continue-on-error: true
 
       - name: Initialise gh-pages branch if it does not exist
+        if: steps.checkout-gh-pages.outcome == 'failure'
         run: |
-          if [ ! -d gh-pages/.git ]; then
-            mkdir -p gh-pages
-            cd gh-pages
-            git init -b gh-pages
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit --allow-empty -m "Initialise gh-pages branch"
-            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-            git push -u origin gh-pages
-          fi
+          rm -rf gh-pages
+          mkdir -p gh-pages
+          cd gh-pages
+          git init -b gh-pages
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "Initialise gh-pages branch"
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git push -u origin gh-pages
 
       - name: Add report to site
         run: |
@@ -489,7 +538,9 @@ jobs:
                 break
               fi
               echo "Push failed (attempt $attempt/5), rebasing and retrying..."
-              git pull --rebase origin gh-pages
+              if git ls-remote --exit-code origin gh-pages >/dev/null 2>&1; then
+                git pull --rebase origin gh-pages
+              fi
               sleep $((attempt * 2))
             done
 
