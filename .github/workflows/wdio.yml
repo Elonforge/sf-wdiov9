@@ -554,19 +554,30 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "Deploy report for run ${{ github.run_id }}"
 
-          # Push with retry in case another workflow run pushed concurrently
-          for attempt in 1 2 3 4 5; do
-            if git push origin gh-pages; then
-              echo "✅ Pushed to gh-pages (attempt $attempt)"
-              break
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Deploy report for run ${{ github.run_id }}"
+
+            # Push with retry in case another workflow run pushed concurrently
+            PUSHED=false
+            for attempt in 1 2 3 4 5; do
+              if git push origin gh-pages; then
+                echo "Pushed to gh-pages (attempt $attempt)"
+                PUSHED=true
+                break
+              fi
+              echo "Push failed (attempt $attempt/5), rebasing and retrying..."
+              git pull --rebase origin gh-pages
+              sleep $((attempt * 2))
+            done
+
+            if [ "$PUSHED" != "true" ]; then
+              echo "ERROR: Failed to push to gh-pages after 5 attempts"
+              exit 1
             fi
-            echo "⚠️  Push failed (attempt $attempt/5), rebasing and retrying..."
-            git pull --rebase origin gh-pages
-            sleep $((attempt * 2))
-          done
+          fi
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
