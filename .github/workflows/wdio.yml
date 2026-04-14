@@ -70,17 +70,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install browsers
+        shell: bash
+        run: |
+          # WebDriverIO auto-downloads browser drivers (chromedriver/geckodriver) at runtime.
+          # Chrome and Firefox are pre-installed on windows-latest GitHub runners.
+          echo "Verifying browser availability on runner..."
+          echo "WDIO manages browser drivers automatically via @wdio/local-runner."
+
       - name: Run tests
         shell: bash
         run: |
           TARGET="${{ matrix.target }}"
           REPORTERS="--reporter=spec --reporter=allure"
           if [ "$TARGET" = "all" ]; then
-            npx wdio run wdio.conf.ts $REPORTERS || true
+            npx wdio run wdio.conf.ts $REPORTERS
           elif [[ "$TARGET" == @* ]]; then
-            npx wdio run wdio.conf.ts --mochaOpts.grep "$TARGET" $REPORTERS || true
+            npx wdio run wdio.conf.ts --mochaOpts.grep "$TARGET" $REPORTERS
           else
-            npx wdio run wdio.conf.ts --spec "$TARGET" $REPORTERS || true
+            npx wdio run wdio.conf.ts --spec "$TARGET" $REPORTERS
           fi
 
       - name: Upload blob report
