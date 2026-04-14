@@ -1,0 +1,617 @@
+name: Reusable WDIO Test & Deploy
+
+on:
+  workflow_call:
+    inputs:
+      test_env:
+        description: 'Environment to run tests against (e.g. dev, staging, prod).'
+        type: string
+        default: 'dev'
+      targets:
+        description: >-
+          Comma-separated test targets to run in parallel.
+          Each entry can be a file, a directory, or a @tag passed via --grep.
+          Leave empty to run all tests.
+        type: string
+        default: ''
+      workflow_name:
+        description: 'Identifier for this workflow (e.g. wdio, wdio-smoke, wdio-api, wdio-web).'
+        type: string
+        required: true
+      test_suite:
+        description: 'WDIO suite to run (e.g. api, web). Leave empty for all suites.'
+        type: string
+        default: ''
+      artifact_prefix:
+        description: 'Prefix for blob report artifacts (e.g. blob-report, blob-report-smoke).'
+        type: string
+        required: true
+      report_artifact_name:
+        description: 'Name for the final HTML report artifact (e.g. wdio-report, wdio-smoke-report).'
+        type: string
+        required: true
+      func_name:
+        description: 'Fixed function name for deploy folder. If empty, computed from targets.'
+        type: string
+        default: ''
+      test_timeout:
+        description: 'Timeout in minutes for each test matrix job.'
+        type: number
+        default: 30
+      concurrency_group:
+        description: 'Concurrency group for deploy serialization.'
+        type: string
+        required: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  # ── Job 1: prepare – Build the matrix from comma-separated input ───────────
+  prepare:
+    name: Prepare test matrix
+    runs-on: windows-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Build matrix
+        id: set-matrix
+        shell: pwsh
+        run: |
+          $Targets = "${{ inputs.targets }}"
+          if ([string]::IsNullOrWhiteSpace($Targets)) {
+            $Matrix = '["all"]'
+          } else {
+            $items = $Targets -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+            $Matrix = $items | ConvertTo-Json -Compress
+            if ($Matrix -notmatch '^\[') { $Matrix = "[$Matrix]" }
+          }
+          "matrix=$Matrix" | Out-File -Append -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+          Write-Host "Matrix: $Matrix"
+
+  # ── Job 2: test – Run tests in parallel (one job per matrix target) ────────
+  test:
+    name: Test — ${{ matrix.target }}
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: ${{ inputs.test_timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install browsers
+        shell: pwsh
+        run: |
+          Write-Host "Verifying browser availability on runner..."
+          Write-Host "WDIO manages browser drivers automatically via @wdio/local-runner."
+
+      - name: Run tests
+        shell: pwsh
+        env:
+          TEST_ENV: ${{ inputs.test_env }}
+        run: |
+          $Target = "${{ matrix.target }}"
+          $Suite  = "${{ inputs.test_suite }}"
+          $Reporters = @("--reporter=spec", "--reporter=allure")
+
+          # Build optional --suite flag
+          $SuiteFlag = @()
+          if ($Suite -ne "") { $SuiteFlag = @("--suite", $Suite) }
+
+          if ($Target -eq "all") {
+            npx wdio run wdio.conf.ts @SuiteFlag @Reporters
+          } elseif ($Target.StartsWith("@")) {
+            npx wdio run wdio.conf.ts @SuiteFlag --mochaOpts.grep $Target @Reporters
+          } else {
+            # Ensure directory paths get a proper glob pattern
+            if (-not ($Target -match '\.\w+$')) {
+              $Target = $Target.TrimEnd('/\') + "/**/*.spec.ts"
+            }
+            npx wdio run wdio.conf.ts --spec $Target @Reporters
+          }
+
+      - name: Upload blob report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_prefix }}-${{ strategy.job-index }}
+          path: |
+            allure-results/
+            test-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ── Job 3: merge-reports – Merge all reports into a single HTML report ─────
+  merge-reports:
+    name: Merge reports
+    needs: [test]
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download all blob report artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ inputs.artifact_prefix }}-*
+          path: all-blob-reports
+          merge-multiple: true
+
+      - name: Generate Allure HTML report
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path merged-allure-results | Out-Null
+          if (Test-Path all-blob-reports/allure-results) {
+            Copy-Item -Path all-blob-reports/allure-results/* -Destination merged-allure-results/ -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          Get-ChildItem -Path all-blob-reports -Recurse -Include '*.json','*.xml','*.txt','*.png' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'allure-results' } |
+            ForEach-Object { Copy-Item $_.FullName -Destination merged-allure-results/ -Force -ErrorAction SilentlyContinue }
+
+          Write-Host "Merged allure results:"
+          $items = Get-ChildItem merged-allure-results/ -ErrorAction SilentlyContinue
+          if ($items) { $items | Format-Table -AutoSize } else { Write-Host "  (empty)" }
+
+          npx allure generate merged-allure-results -o allure-report
+
+      - name: Upload merged HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.report_artifact_name }}
+          path: allure-report/
+          retention-days: 30
+
+  # ── Job 4: deploy-report – Deploy to GitHub Pages (gh-pages branch) ────────
+  # Uses a gh-pages branch for persistent, merge-safe history instead of cache.
+  # Each run gets a stable URL at /runs/<workflow>/<run_id>/ and a descriptive
+  # history entry at /history/<env>--<func>--<timestamp>/.
+  # The concurrency group is scoped here so test jobs can run in parallel
+  # across workflow runs while deployments are serialised.
+  deploy-report:
+    name: Deploy report to Pages
+    needs: [merge-reports]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ${{ inputs.concurrency_group }}
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download merged HTML report
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.report_artifact_name }}
+          path: new-report
+
+      - name: Checkout gh-pages branch
+        id: checkout-gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Initialise gh-pages branch if it does not exist
+        if: steps.checkout-gh-pages.outcome == 'failure'
+        run: |
+          rm -rf gh-pages
+          mkdir -p gh-pages
+          cd gh-pages
+          git init -b gh-pages
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "Initialise gh-pages branch"
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git push -u origin gh-pages
+
+      - name: Add report to site
+        run: |
+          set -euo pipefail
+
+          # ── Build descriptive folder name ──────────────────────────────────
+          ENV_NAME="${{ inputs.test_env }}"
+          [ -z "$ENV_NAME" ] && ENV_NAME="dev"
+
+          FUNC_NAME="${{ inputs.func_name }}"
+          if [ -z "$FUNC_NAME" ]; then
+            TARGETS="${{ inputs.targets }}"
+            if [ -z "$TARGETS" ]; then
+              FUNC_NAME="all"
+            else
+              FUNC_NAME=$(echo "$TARGETS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | while read -r t; do
+                leaf=$(basename "${t%/}")
+                leaf="${leaf%.*}"
+                echo "$leaf" | sed 's/[^a-zA-Z0-9@_-]/-/g'
+              done | paste -sd'+')
+              [ ${#FUNC_NAME} -gt 80 ] && FUNC_NAME="${FUNC_NAME:0:80}"
+            fi
+          fi
+
+          TIMESTAMP=$(date -u +"%Y-%m-%d_%H-%M-%S")
+          FOLDER_NAME="${ENV_NAME}--${FUNC_NAME}--${TIMESTAMP}"
+          RUN_ID="${{ github.run_id }}"
+          WORKFLOW="${{ inputs.workflow_name }}"
+
+          echo "History folder : $FOLDER_NAME"
+          echo "Stable run URL : /runs/${WORKFLOW}/${RUN_ID}/"
+
+          # ── Copy report into per-run-ID folder (stable URL) ────────────────
+          mkdir -p "gh-pages/runs/${WORKFLOW}/${RUN_ID}"
+          rsync -a --exclude='*.webm' --exclude='*.zip' new-report/ "gh-pages/runs/${WORKFLOW}/${RUN_ID}/"
+
+          # ── Copy into descriptive history folder ───────────────────────────
+          mkdir -p "gh-pages/history/${FOLDER_NAME}"
+          rsync -a --exclude='*.webm' --exclude='*.zip' new-report/ "gh-pages/history/${FOLDER_NAME}/"
+
+          # ── Copy as "latest" under /latest/ ────────────────────────────────
+          mkdir -p gh-pages/latest
+          rsync -a --delete new-report/ gh-pages/latest/
+
+          # ── Prune history: keep only last 20 entries ───────────────────────
+          cd gh-pages/history
+          DIRS=$(ls -d */ 2>/dev/null | sort || true)
+          COUNT=$(echo "$DIRS" | grep -c . || true)
+          if [ "$COUNT" -gt 20 ]; then
+            REMOVE=$((COUNT - 20))
+            echo "$DIRS" | head -n "$REMOVE" | while read -r d; do
+              echo "Pruning old history entry: $d"
+              rm -rf "$d"
+            done
+          fi
+          cd ../..
+
+          # ── Prune runs: keep only last 20 per workflow ─────────────────────
+          if [ -d "gh-pages/runs/${WORKFLOW}" ]; then
+            cd "gh-pages/runs/${WORKFLOW}"
+            DIRS=$(ls -d */ 2>/dev/null | sort -n || true)
+            COUNT=$(echo "$DIRS" | grep -c . || true)
+            if [ "$COUNT" -gt 20 ]; then
+              REMOVE=$((COUNT - 20))
+              echo "$DIRS" | head -n "$REMOVE" | while read -r d; do
+                echo "Pruning old run entry: $d"
+                rm -rf "$d"
+              done
+            fi
+            cd ../../..
+          fi
+
+      - name: Generate dashboard and history pages
+        run: |
+          set -euo pipefail
+
+          REPO="${{ github.repository }}"
+          SERVER_URL="${{ github.server_url }}"
+
+          # ── Build root index.html (dashboard) ──────────────────────────────
+          cat > gh-pages/index.html << 'DASHBOARD_EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <title>Test Reports Dashboard</title>
+            <style>
+              *{margin:0;padding:0;box-sizing:border-box}
+              body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;color:#333;padding:2rem}
+              h1{margin-bottom:.25rem}
+              .subtitle{color:#666;margin-bottom:1.5rem;font-size:.95rem}
+              .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1rem;margin-bottom:2rem}
+              .card{background:#fff;border-radius:10px;padding:1.25rem;box-shadow:0 1px 4px rgba(0,0,0,.08);text-decoration:none;color:inherit;transition:box-shadow .15s,transform .15s}
+              .card:hover{box-shadow:0 4px 16px rgba(0,0,0,.12);transform:translateY(-2px)}
+              .card h2{font-size:1.1rem;margin-bottom:.5rem}
+              .card p{font-size:.85rem;color:#666}
+              .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:600;margin-left:.5rem;vertical-align:middle}
+              .badge-latest{background:#e8f5e9;color:#2e7d32}
+              .badge-history{background:#e3f2fd;color:#1565c0}
+              .badge-runs{background:#fff3e0;color:#e65100}
+              hr{border:none;border-top:1px solid #e0e0e0;margin:1.5rem 0}
+              h3{margin-bottom:.75rem}
+              table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+              th{background:#1a73e8;color:#fff;text-align:left;padding:.75rem 1rem;font-size:.9rem}
+              td{padding:.75rem 1rem;border-bottom:1px solid #eee;font-size:.9rem}
+              tr:last-child td{border-bottom:none}
+              tr:hover td{background:#e8f0fe}
+              td a{color:#1a73e8;text-decoration:none}
+              td a:hover{text-decoration:underline}
+              .env-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.8rem;font-weight:600}
+              .env-dev{background:#e8f5e9;color:#2e7d32}
+              .env-staging{background:#fff3e0;color:#e65100}
+              .env-prod{background:#fce4ec;color:#c62828}
+              .env-default{background:#e3f2fd;color:#1565c0}
+            </style>
+          </head>
+          <body>
+            <h1>🧪 Test Reports Dashboard</h1>
+            <p class="subtitle">Each workflow run has its own stable URL — concurrent runs are safe.</p>
+
+            <div class="cards">
+              <a class="card" href="latest/">
+                <h2>📄 Latest Report <span class="badge badge-latest">latest</span></h2>
+                <p>Jump to the most recent test report.</p>
+              </a>
+              <a class="card" href="history/">
+                <h2>📊 Full History <span class="badge badge-history">history</span></h2>
+                <p>Browse all reports by environment, functionality &amp; date.</p>
+              </a>
+              <a class="card" href="runs/">
+                <h2>🔗 By Run ID <span class="badge badge-runs">runs</span></h2>
+                <p>Look up a specific workflow run by its GitHub run ID.</p>
+              </a>
+            </div>
+
+            <hr/>
+            <h3>Recent Runs</h3>
+            <table>
+              <thead><tr><th>Environment</th><th>Functionality</th><th>Date &amp; Time (UTC)</th><th>Report</th></tr></thead>
+              <tbody id="recent"></tbody>
+            </table>
+
+            <script>
+          DASHBOARD_EOF
+
+          # Inject the entries array from the history folder
+          echo '      const entries = [' >> gh-pages/index.html
+          if [ -d gh-pages/history ]; then
+            ls -d gh-pages/history/*/ 2>/dev/null | sort -r | head -10 | while read -r d; do
+              name=$(basename "$d")
+              echo "        \"${name}\"," >> gh-pages/index.html
+            done
+          fi
+          echo '      ];' >> gh-pages/index.html
+
+          cat >> gh-pages/index.html << 'DASHBOARD_JS_EOF'
+              const tbody = document.getElementById('recent');
+              entries.forEach(name => {
+                const parts = name.split('--');
+                let env, func, displayTs;
+                if (parts.length >= 3) {
+                  env = parts[0] || '';
+                  func = parts.slice(1, -1).join(', ');
+                  const ts = parts[parts.length - 1] || '';
+                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, o, s) => o > 9 ? ':' : '-');
+                } else {
+                  env = parts[0] || '—';
+                  func = parts[1] || '—';
+                  displayTs = '';
+                }
+                const envClass = ['dev','staging','prod'].includes(env) ? 'env-' + env : 'env-default';
+                const tr = document.createElement('tr');
+                tr.innerHTML =
+                  '<td><span class="env-badge ' + envClass + '">' + env + '</span></td>' +
+                  '<td>' + func.replace(/\+/g, ', ') + '</td>' +
+                  '<td>' + displayTs + '</td>' +
+                  '<td><a href="history/' + name + '/">View</a></td>';
+                tbody.appendChild(tr);
+              });
+              if (!entries.length) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td colspan="4" style="text-align:center">No reports yet.</td>';
+                tbody.appendChild(tr);
+              }
+            </script>
+          </body>
+          </html>
+          DASHBOARD_JS_EOF
+
+          # ── Generate history/index.html ──────────────────────────────────────
+          cat > gh-pages/history/index.html << 'HIST_HEAD_EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <title>Test Report History</title>
+            <style>
+              *{margin:0;padding:0;box-sizing:border-box}
+              body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;color:#333;padding:2rem}
+              h1{margin-bottom:.5rem}
+              .back{display:inline-block;margin-bottom:1.5rem;color:#1a73e8;text-decoration:none;font-size:.95rem}
+              .back:hover{text-decoration:underline}
+              table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+              th{background:#1a73e8;color:#fff;text-align:left;padding:.75rem 1rem;font-size:.9rem}
+              td{padding:.75rem 1rem;border-bottom:1px solid #eee;font-size:.9rem}
+              tr:last-child td{border-bottom:none}
+              tr:hover td{background:#e8f0fe}
+              td a{color:#1a73e8;text-decoration:none}
+              td a:hover{text-decoration:underline}
+              .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.8rem;font-weight:600}
+              .env-dev{background:#e8f5e9;color:#2e7d32}
+              .env-staging{background:#fff3e0;color:#e65100}
+              .env-prod{background:#fce4ec;color:#c62828}
+              .env-default{background:#e3f2fd;color:#1565c0}
+            </style>
+          </head>
+          <body>
+            <h1>📊 Test Report History</h1>
+            <a class="back" href="../">← Dashboard</a>
+            <table>
+              <thead><tr><th>Environment</th><th>Functionality</th><th>Date &amp; Time (UTC)</th><th>Report</th></tr></thead>
+              <tbody id="entries"></tbody>
+            </table>
+            <script>
+          HIST_HEAD_EOF
+
+          echo '      const entries = [' >> gh-pages/history/index.html
+          if [ -d gh-pages/history ]; then
+            ls -d gh-pages/history/*/ 2>/dev/null | sort -r | while read -r d; do
+              name=$(basename "$d")
+              echo "        \"${name}\"," >> gh-pages/history/index.html
+            done
+          fi
+          echo '      ];' >> gh-pages/history/index.html
+
+          cat >> gh-pages/history/index.html << 'HIST_JS_EOF'
+              const tbody = document.getElementById('entries');
+              entries.forEach(name => {
+                let env, func, displayTs;
+                if (name.startsWith('run-')) {
+                  env = '—';
+                  func = name.split('--')[0] || name;
+                  const ts = name.split('--')[1] || '';
+                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, o, s) => o > 9 ? ':' : '-');
+                } else {
+                  const parts = name.split('--');
+                  env = parts[0] || '';
+                  func = parts.length > 2 ? parts.slice(1, -1).join(', ') : (parts[1] || '');
+                  const ts = parts[parts.length - 1] || '';
+                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, o, s) => o > 9 ? ':' : '-');
+                }
+                const envClass = ['dev','staging','prod'].includes(env) ? 'env-' + env : 'env-default';
+                const tr = document.createElement('tr');
+                tr.innerHTML =
+                  '<td><span class="badge ' + envClass + '">' + env + '</span></td>' +
+                  '<td>' + func.replace(/\+/g, ', ') + '</td>' +
+                  '<td>' + displayTs + '</td>' +
+                  '<td><a href="' + name + '/">View Report</a></td>';
+                tbody.appendChild(tr);
+              });
+              if (!entries.length) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td colspan="4" style="text-align:center">No history entries yet.</td>';
+                tbody.appendChild(tr);
+              }
+            </script>
+          </body>
+          </html>
+          HIST_JS_EOF
+
+          # ── Generate runs/index.html ─────────────────────────────────────────
+          mkdir -p gh-pages/runs
+          cat > gh-pages/runs/index.html << 'RUNS_HEAD_EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <title>Reports by Run ID</title>
+            <style>
+              *{margin:0;padding:0;box-sizing:border-box}
+              body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;color:#333;padding:2rem}
+              h1{margin-bottom:.5rem}
+              .back{display:inline-block;margin-bottom:1.5rem;color:#1a73e8;text-decoration:none;font-size:.95rem}
+              .back:hover{text-decoration:underline}
+              table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+              th{background:#1a73e8;color:#fff;text-align:left;padding:.75rem 1rem;font-size:.9rem}
+              td{padding:.75rem 1rem;border-bottom:1px solid #eee;font-size:.9rem}
+              tr:last-child td{border-bottom:none}
+              tr:hover td{background:#e8f0fe}
+              td a{color:#1a73e8;text-decoration:none}
+              td a:hover{text-decoration:underline}
+            </style>
+          </head>
+          <body>
+            <h1>🔗 Reports by Run ID</h1>
+            <a class="back" href="../">← Dashboard</a>
+            <p style="margin-bottom:1.5rem;color:#666;font-size:.9rem">Each workflow run gets a permanent link. Share these URLs safely — they won't change.</p>
+            <table>
+              <thead><tr><th>Workflow</th><th>Run ID</th><th>Report</th></tr></thead>
+              <tbody id="runs"></tbody>
+            </table>
+            <script>
+          RUNS_HEAD_EOF
+
+          # Collect run entries from the filesystem
+          echo '      const runs = [' >> gh-pages/runs/index.html
+          for wf_dir in gh-pages/runs/*/; do
+            [ -d "$wf_dir" ] || continue
+            wf=$(basename "$wf_dir")
+            [ "$wf" = "index.html" ] && continue
+            ls -d "${wf_dir}"*/ 2>/dev/null | sort -rn | while read -r rd; do
+              rid=$(basename "$rd")
+              echo "        {workflow:\"${wf}\",runId:\"${rid}\"}," >> gh-pages/runs/index.html
+            done
+          done
+          echo '      ];' >> gh-pages/runs/index.html
+
+          cat >> gh-pages/runs/index.html << 'RUNS_JS_EOF'
+              const tbody = document.getElementById('runs');
+              runs.forEach(r => {
+                const tr = document.createElement('tr');
+                tr.innerHTML =
+                  '<td>' + r.workflow + '</td>' +
+                  '<td><code>' + r.runId + '</code></td>' +
+                  '<td><a href="' + r.workflow + '/' + r.runId + '/">View Report</a></td>';
+                tbody.appendChild(tr);
+              });
+              if (!runs.length) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td colspan="3" style="text-align:center">No runs recorded yet.</td>';
+                tbody.appendChild(tr);
+              }
+            </script>
+          </body>
+          </html>
+          RUNS_JS_EOF
+
+          echo "Dashboard and index pages generated."
+
+      - name: Commit and push to gh-pages
+        run: |
+          cd gh-pages
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Deploy ${{ inputs.workflow_name }} report for run ${{ github.run_id }}"
+
+            # Push with retry in case another workflow run pushed concurrently
+            PUSHED=false
+            for attempt in 1 2 3 4 5; do
+              if git push origin gh-pages; then
+                echo "Pushed to gh-pages (attempt $attempt)"
+                PUSHED=true
+                break
+              fi
+              echo "Push failed (attempt $attempt/5), rebasing and retrying..."
+              if git ls-remote --exit-code origin gh-pages >/dev/null 2>&1; then
+                git pull --rebase origin gh-pages
+              fi
+              sleep $((attempt * 2))
+            done
+
+            if [ "$PUSHED" != "true" ]; then
+              echo "ERROR: Failed to push to gh-pages after 5 attempts"
+              exit 1
+            fi
+          fi
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: gh-pages/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
