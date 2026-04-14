@@ -326,14 +326,14 @@ jobs:
                   env = '—';
                   func = name.split('--')[0] || name;
                   const ts = name.split('--')[1] || '';
-                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, i) => i > 9 ? ':' : '-');
+                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, offset) => offset > 9 ? ':' : '-');
                 } else {
                   // New format: {env}--{functionality}--{timestamp}
                   const parts = name.split('--');
                   env = parts[0] || '';
                   func = parts.length > 2 ? parts.slice(1, -1).join(', ') : (parts[1] || '');
                   const ts = parts[parts.length - 1] || '';
-                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, i) => i > 9 ? ':' : '-');
+                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, offset) => offset > 9 ? ':' : '-');
                 }
 
                 const envClass = ['dev','staging','prod'].includes(env) ? 'env-' + env : 'env-default';
