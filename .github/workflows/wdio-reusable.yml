@@ -107,22 +107,25 @@ jobs:
         run: |
           $Target = "${{ matrix.target }}"
           $Suite  = "${{ inputs.test_suite }}"
-          $Reporters = @("--reporter=spec", "--reporter=allure")
+
+          # Reporters are configured in wdio.conf.ts (spec + allure + video).
+          # Do NOT override them here — CLI --reporter flags replace the config
+          # array, which would drop the video reporter and allure custom options.
 
           # Build optional --suite flag
           $SuiteFlag = @()
           if ($Suite -ne "") { $SuiteFlag = @("--suite", $Suite) }
 
           if ($Target -eq "all") {
-            npx wdio run wdio.conf.ts @SuiteFlag @Reporters
+            npx wdio run wdio.conf.ts @SuiteFlag
           } elseif ($Target.StartsWith("@")) {
-            npx wdio run wdio.conf.ts @SuiteFlag --mochaOpts.grep $Target @Reporters
+            npx wdio run wdio.conf.ts @SuiteFlag --mochaOpts.grep $Target
           } else {
             # Ensure directory paths get a proper glob pattern
             if (-not ($Target -match '\.\w+$')) {
               $Target = $Target.TrimEnd('/\') + "/**/*.spec.ts"
             }
-            npx wdio run wdio.conf.ts --spec $Target @Reporters
+            npx wdio run wdio.conf.ts --spec $Target
           }
 
       - name: Upload blob report
