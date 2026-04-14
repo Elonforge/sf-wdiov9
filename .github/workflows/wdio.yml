@@ -96,6 +96,10 @@ jobs:
           } elseif ($Target.StartsWith("@")) {
             npx wdio run wdio.conf.ts --mochaOpts.grep $Target @Reporters
           } else {
+            # Ensure directory paths get a proper glob pattern
+            if (-not ($Target -match '\.\w+$')) {
+              $Target = $Target.TrimEnd('/\') + "/**/*.spec.ts"
+            }
             npx wdio run wdio.conf.ts --spec $Target @Reporters
           }
 
@@ -190,6 +194,7 @@ jobs:
           path: new-report
 
       - name: Checkout gh-pages branch
+        id: checkout-gh-pages
         uses: actions/checkout@v4
         with:
           ref: gh-pages
@@ -198,17 +203,17 @@ jobs:
         continue-on-error: true
 
       - name: Initialise gh-pages branch if it does not exist
+        if: steps.checkout-gh-pages.outcome == 'failure'
         run: |
-          if [ ! -d gh-pages/.git ]; then
-            mkdir -p gh-pages
-            cd gh-pages
-            git init -b gh-pages
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit --allow-empty -m "Initialise gh-pages branch"
-            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-            git push -u origin gh-pages
-          fi
+          rm -rf gh-pages
+          mkdir -p gh-pages
+          cd gh-pages
+          git init -b gh-pages
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "Initialise gh-pages branch"
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git push -u origin gh-pages
 
       - name: Add report to site
         run: |
@@ -569,7 +574,9 @@ jobs:
                 break
               fi
               echo "Push failed (attempt $attempt/5), rebasing and retrying..."
-              git pull --rebase origin gh-pages
+              if git ls-remote --exit-code origin gh-pages >/dev/null 2>&1; then
+                git pull --rebase origin gh-pages
+              fi
               sleep $((attempt * 2))
             done
 
