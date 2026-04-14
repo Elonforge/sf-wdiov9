@@ -427,7 +427,7 @@ jobs:
           <body>
             <h1>🔗 Reports by Run ID</h1>
             <a class="back" href="../">← Dashboard</a>
-            <p style="margin-bottom:1.5rem;color:#666;font-size:.9rem">Each workflow run gets a permanent link.</p>
+            <p style="margin-bottom:1.5rem;color:#666;font-size:.9rem">Each workflow run gets a permanent link. Share these URLs safely — they won't change.</p>
             <table>
               <thead><tr><th>Workflow</th><th>Run ID</th><th>Report</th></tr></thead>
               <tbody id="runs"></tbody>
