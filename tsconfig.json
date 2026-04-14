@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "types": ["node", "mocha", "@wdio/globals/types"],
+    "paths": {
+      "@pages/*": ["pages/*"]
+    },
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["wdio.conf.ts", "pages/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist", "allure-report", "allure-results", "test-results"]
+}

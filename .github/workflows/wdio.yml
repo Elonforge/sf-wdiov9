@@ -1,0 +1,301 @@
+name: WebDriverIO Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: >-
+          Comma-separated test targets to run in parallel.
+          Each entry can be a file (tests/web/todo.spec.ts), a directory
+          (tests/api/), or a @tag passed via --grep.
+          Leave empty to run all tests.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  # ── Job 1: prepare – Build the matrix from comma-separated input ───────────
+  prepare:
+    name: Prepare test matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Build matrix
+        id: set-matrix
+        run: |
+          INPUT="${{ github.event.inputs.targets }}"
+          if [ -z "$INPUT" ]; then
+            MATRIX='["all"]'
+          else
+            MATRIX=$(echo "$INPUT" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0))')
+          fi
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "📋 Matrix: $MATRIX"
+
+  # ── Job 2: test – Run tests in parallel (one job per matrix target) ────────
+  test:
+    name: Test — ${{ matrix.target }}
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install browsers
+        shell: bash
+        run: |
+          # WebDriverIO auto-downloads browser drivers (chromedriver/geckodriver) at runtime.
+          # Chrome and Firefox are pre-installed on windows-latest GitHub runners.
+          echo "Verifying browser availability on runner..."
+          echo "WDIO manages browser drivers automatically via @wdio/local-runner."
+
+      - name: Run tests
+        shell: bash
+        run: |
+          TARGET="${{ matrix.target }}"
+          REPORTERS="--reporter=spec --reporter=allure"
+          if [ "$TARGET" = "all" ]; then
+            npx wdio run wdio.conf.ts $REPORTERS
+          elif [[ "$TARGET" == @* ]]; then
+            npx wdio run wdio.conf.ts --mochaOpts.grep "$TARGET" $REPORTERS
+          else
+            npx wdio run wdio.conf.ts --spec "$TARGET" $REPORTERS
+          fi
+
+      - name: Upload blob report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ strategy.job-index }}
+          path: |
+            allure-results/
+            test-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ── Job 3: merge-reports – Merge all reports into a single HTML report ─────
+  merge-reports:
+    name: Merge reports
+    needs: [test]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download all blob report artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: blob-report-*
+          path: all-blob-reports
+          merge-multiple: true
+
+      - name: Merge into single Allure HTML report
+        run: |
+          # Collect all allure-results from downloaded blobs
+          mkdir -p merged-allure-results
+          if [ -d all-blob-reports/allure-results ]; then
+            cp -r all-blob-reports/allure-results/* merged-allure-results/ 2>/dev/null || true
+          fi
+          # Also grab any loose allure result files
+          find all-blob-reports -name '*.json' -path '*/allure-results/*' -exec cp {} merged-allure-results/ \; 2>/dev/null || true
+          find all-blob-reports -name '*.xml' -path '*/allure-results/*' -exec cp {} merged-allure-results/ \; 2>/dev/null || true
+          find all-blob-reports -name '*.txt' -path '*/allure-results/*' -exec cp {} merged-allure-results/ \; 2>/dev/null || true
+          find all-blob-reports -name '*.png' -path '*/allure-results/*' -exec cp {} merged-allure-results/ \; 2>/dev/null || true
+
+          echo "📁 Merged allure results:"
+          ls -la merged-allure-results/ || echo "  (empty)"
+
+          # Generate Allure HTML report
+          npx allure generate merged-allure-results --clean -o allure-report
+
+      - name: Upload merged HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: wdio-report
+          path: allure-report/
+          retention-days: 30
+
+  # ── Job 4: deploy-report – Deploy to GitHub Pages with history ─────────────
+  deploy-report:
+    name: Deploy report to Pages
+    needs: [merge-reports]
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download merged HTML report
+        uses: actions/download-artifact@v4
+        with:
+          name: wdio-report
+          path: new-report
+
+      - name: Restore report history from cache
+        uses: actions/cache/restore@v4
+        with:
+          path: site/history
+          key: wdio-report-history-${{ github.run_id }}
+          restore-keys: |
+            wdio-report-history-
+
+      - name: Build site with history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RUN_NUM="${{ github.run_number }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d_%H-%M-%S")
+          FOLDER_NAME="run-${RUN_NUM}--${TIMESTAMP}"
+
+          # ── Ensure directories exist ──
+          mkdir -p site/history
+
+          # ── Copy new report into history (strip heavy files) ──
+          mkdir -p "site/history/${FOLDER_NAME}"
+          rsync -a --exclude='*.webm' --exclude='*.zip' \
+            new-report/ "site/history/${FOLDER_NAME}/"
+
+          # ── Copy full new report as the "latest" at site root ──
+          rsync -a new-report/ site/
+
+          # ── Inject floating "📊 History" link into site/index.html ──
+          if [ -f site/index.html ]; then
+            HISTORY_LINK='<a href="history/" style="position:fixed;bottom:20px;right:20px;z-index:9999;background:#1a73e8;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-family:sans-serif;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,0.2);">📊 History</a>'
+            sed -i "s|</body>|${HISTORY_LINK}</body>|" site/index.html
+          fi
+
+          # ── Prune history: keep only last 20 entries ──
+          cd site/history
+          ENTRIES=$(ls -1d run-* 2>/dev/null | sort || true)
+          COUNT=$(echo "$ENTRIES" | grep -c . || true)
+          if [ "$COUNT" -gt 20 ]; then
+            REMOVE_COUNT=$((COUNT - 20))
+            echo "$ENTRIES" | head -n "$REMOVE_COUNT" | while read -r old; do
+              echo "🗑  Pruning old report: $old"
+              rm -rf "$old"
+            done
+          fi
+          cd ../..
+
+          # ── Generate site/history/index.html ──
+          cat > site/history/index.html << 'HISTEOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>Test Report History</title>
+            <style>
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                     background: #f5f5f5; color: #333; padding: 2rem; }
+              h1 { margin-bottom: 0.5rem; }
+              .back { display: inline-block; margin-bottom: 1.5rem; color: #1a73e8;
+                      text-decoration: none; font-size: 0.95rem; }
+              .back:hover { text-decoration: underline; }
+              ul { list-style: none; }
+              li { background: #fff; margin-bottom: 0.5rem; border-radius: 6px;
+                   box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+              li a { display: block; padding: 0.75rem 1rem; color: #1a73e8;
+                     text-decoration: none; font-size: 0.95rem; }
+              li a:hover { background: #e8f0fe; border-radius: 6px; }
+            </style>
+          </head>
+          <body>
+            <h1>📊 Test Report History</h1>
+            <a class="back" href="../">← Latest Report</a>
+            <ul id="entries"></ul>
+            <script>
+          HISTEOF
+
+          # Build the entry list dynamically from the filesystem
+          echo '      const entries = [' >> site/history/index.html
+          ls -1d site/history/run-* 2>/dev/null | sort -r | while read -r dir; do
+            name=$(basename "$dir")
+            echo "        { name: \"${name}\", href: \"${name}/\" }," >> site/history/index.html
+          done
+          echo '      ];' >> site/history/index.html
+
+          cat >> site/history/index.html << 'HISTEOF2'
+              const ul = document.getElementById('entries');
+              entries.forEach(e => {
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                a.href = e.href;
+                a.textContent = e.name;
+                li.appendChild(a);
+                ul.appendChild(li);
+              });
+              if (!entries.length) {
+                const li = document.createElement('li');
+                li.style.padding = '0.75rem 1rem';
+                li.textContent = 'No history entries yet.';
+                ul.appendChild(li);
+              }
+            </script>
+          </body>
+          </html>
+          HISTEOF2
+
+          echo "✅ Site built. History entries:"
+          ls -1d site/history/run-* 2>/dev/null | sort || echo "  (none)"
+
+      - name: Save report history to cache
+        uses: actions/cache/save@v4
+        with:
+          path: site/history
+          key: wdio-report-history-${{ github.run_id }}
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -70,6 +70,14 @@ web_modules/
 .env.*
 !.env.example
 
+# Allure reports (generated artifacts)
+allure-results/
+allure-report/
+
+# WebDriverIO logs & test output
+wdio-*.log
+test-results/
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
