@@ -154,7 +154,22 @@ install → test (matrix) → report & deploy
 |---|---|
 | **Install** | `npm ci` + `node_modules` cache |
 | **Test** | Matrix: `{chrome, firefox} × {dev, staging}`, uploads Allure blob artifacts |
-| **Report** | Merges blobs, restores history from `gh-pages`, generates Allure report, deploys to GitHub Pages |
+| **Report** | Merges blobs, generates Allure report, deploys to GitHub Pages via `gh-pages` branch |
+
+### Report URLs
+
+After deployment, reports are available at these stable URLs:
+
+| URL | Description |
+|---|---|
+| `/` | Dashboard — links to latest report, full history, and per-run reports |
+| `/latest/` | Always points to the most recent report |
+| `/history/{env}--{func}--{timestamp}/` | Descriptive per-run report (e.g. `dev--all--2025-01-15_08-30-00`) |
+| `/runs/wdio/{run_id}/` | Stable per-run URL using the GitHub Actions run ID |
+| `/history/` | Full history table of all reports |
+| `/runs/` | Lookup table by workflow run ID |
+
+> **Concurrent workflows are safe.** The deploy job uses a `gh-pages` Git branch for history storage (not cache), with a job-level concurrency group and push-with-retry. Multiple workflow runs can test in parallel; only deployments are serialised.
 
 ---
 

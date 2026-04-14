@@ -1,10 +1,20 @@
-name: WebDriverIO Tests
+name: WebDriverIO API Tests
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'tests/api/**'
+      - 'wdio.conf.ts'
+      - 'package.json'
+      - '.github/workflows/wdio-api.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'tests/api/**'
+      - 'wdio.conf.ts'
+      - 'package.json'
+      - '.github/workflows/wdio-api.yml'
   workflow_dispatch:
     inputs:
       test_env:
@@ -14,15 +24,6 @@ on:
         required: false
         default: 'dev'
         type: string
-      targets:
-        description: >-
-          Comma-separated test targets to run in parallel.
-          Each entry can be a file (tests/web/todo.spec.ts), a directory
-          (tests/api/), or a @tag passed via --grep.
-          Leave empty to run all tests.
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: write
@@ -31,38 +32,11 @@ permissions:
 
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
-  # ── Job 1: prepare – Build the matrix from comma-separated input ───────────
-  prepare:
-    name: Prepare test matrix
-    runs-on: windows-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - name: Build matrix
-        id: set-matrix
-        shell: pwsh
-        run: |
-          $Targets = "${{ github.event.inputs.targets }}"
-          if ([string]::IsNullOrWhiteSpace($Targets)) {
-            $Matrix = '["all"]'
-          } else {
-            $items = $Targets -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-            $Matrix = $items | ConvertTo-Json -Compress
-            if ($Matrix -notmatch '^\[') { $Matrix = "[$Matrix]" }
-          }
-          "matrix=$Matrix" | Out-File -Append -FilePath $env:GITHUB_OUTPUT -Encoding utf8
-          Write-Host "📋 Matrix: $Matrix"
-
-  # ── Job 2: test – Run tests in parallel (one job per matrix target) ────────
+  # ── Job 1: test – Run API tests ────────────────────────────────────────────
   test:
-    name: Test — ${{ matrix.target }}
-    needs: prepare
+    name: API Tests
     runs-on: windows-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        target: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -79,40 +53,30 @@ jobs:
       - name: Install browsers
         shell: pwsh
         run: |
-          # WebDriverIO auto-downloads browser drivers (chromedriver/geckodriver) at runtime.
-          # Chrome and Firefox are pre-installed on windows-latest GitHub runners.
           Write-Host "Verifying browser availability on runner..."
           Write-Host "WDIO manages browser drivers automatically via @wdio/local-runner."
 
-      - name: Run tests
+      - name: Run API tests
         shell: pwsh
         env:
           TEST_ENV: ${{ github.event.inputs.test_env || 'dev' }}
         run: |
-          $Target = "${{ matrix.target }}"
-          $Reporters = @("--reporter=spec", "--reporter=allure")
-          if ($Target -eq "all") {
-            npx wdio run wdio.conf.ts @Reporters
-          } elseif ($Target.StartsWith("@")) {
-            npx wdio run wdio.conf.ts --mochaOpts.grep $Target @Reporters
-          } else {
-            npx wdio run wdio.conf.ts --spec $Target @Reporters
-          }
+          npx wdio run wdio.conf.ts --spec tests/api/ --reporter=spec --reporter=allure
 
       - name: Upload blob report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: blob-report-${{ strategy.job-index }}
+          name: blob-report-api-0
           path: |
             allure-results/
             test-results/
           retention-days: 7
           if-no-files-found: warn
 
-  # ── Job 3: merge-reports – Merge all reports into a single HTML report ─────
-  merge-reports:
-    name: Merge reports
+  # ── Job 2: report – Generate Allure HTML report ────────────────────────────
+  report:
+    name: Generate report
     needs: [test]
     if: ${{ !cancelled() }}
     runs-on: windows-latest
@@ -130,49 +94,41 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download all blob report artifacts
+      - name: Download blob report artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: blob-report-*
+          pattern: blob-report-api-*
           path: all-blob-reports
           merge-multiple: true
 
-      - name: Merge into single Allure HTML report
+      - name: Generate Allure HTML report
         shell: pwsh
         run: |
-          # Collect all allure-results from downloaded blobs
           New-Item -ItemType Directory -Force -Path merged-allure-results | Out-Null
           if (Test-Path all-blob-reports/allure-results) {
             Copy-Item -Path all-blob-reports/allure-results/* -Destination merged-allure-results/ -Recurse -Force -ErrorAction SilentlyContinue
           }
-          # Also grab any loose allure result files
           Get-ChildItem -Path all-blob-reports -Recurse -Include '*.json','*.xml','*.txt','*.png' -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -match 'allure-results' } |
             ForEach-Object { Copy-Item $_.FullName -Destination merged-allure-results/ -Force -ErrorAction SilentlyContinue }
 
-          Write-Host "📁 Merged allure results:"
+          Write-Host "Merged allure results:"
           $items = Get-ChildItem merged-allure-results/ -ErrorAction SilentlyContinue
           if ($items) { $items | Format-Table -AutoSize } else { Write-Host "  (empty)" }
 
-          # Generate Allure 3 HTML report
           npx allure generate merged-allure-results -o allure-report
 
-      - name: Upload merged HTML report
+      - name: Upload HTML report
         uses: actions/upload-artifact@v4
         with:
-          name: wdio-report
+          name: wdio-api-report
           path: allure-report/
           retention-days: 30
 
-  # ── Job 4: deploy-report – Deploy to GitHub Pages (gh-pages branch) ────────
-  # Uses a gh-pages branch for persistent, merge-safe history instead of cache.
-  # Each run gets a stable URL at /runs/<run_id>/ and a descriptive history
-  # entry at /history/<env>--<func>--<timestamp>/.
-  # The concurrency group is scoped here so test jobs can run in parallel
-  # across workflow runs while deployments are serialised.
+  # ── Job 3: deploy – Deploy to GitHub Pages (gh-pages branch) ───────────────
   deploy-report:
     name: Deploy report to Pages
-    needs: [merge-reports]
+    needs: [report]
     if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -183,10 +139,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Download merged HTML report
+      - name: Download HTML report
         uses: actions/download-artifact@v4
         with:
-          name: wdio-report
+          name: wdio-api-report
           path: new-report
 
       - name: Checkout gh-pages branch
@@ -214,56 +170,44 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ── Build descriptive folder name ──────────────────────────────────
           ENV_NAME="${{ github.event.inputs.test_env }}"
           [ -z "$ENV_NAME" ] && ENV_NAME="dev"
 
-          TARGETS="${{ github.event.inputs.targets }}"
-          if [ -z "$TARGETS" ]; then
-            FUNC_NAME="all"
-          else
-            FUNC_NAME=$(echo "$TARGETS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | while read -r t; do
-              leaf=$(basename "${t%/}")
-              leaf="${leaf%.*}"
-              echo "$leaf" | sed 's/[^a-zA-Z0-9@_-]/-/g'
-            done | paste -sd'+')
-            [ ${#FUNC_NAME} -gt 80 ] && FUNC_NAME="${FUNC_NAME:0:80}"
-          fi
-
+          FUNC_NAME="api"
           TIMESTAMP=$(date -u +"%Y-%m-%d_%H-%M-%S")
           FOLDER_NAME="${ENV_NAME}--${FUNC_NAME}--${TIMESTAMP}"
           RUN_ID="${{ github.run_id }}"
-          WORKFLOW="wdio"
+          WORKFLOW="wdio-api"
 
-          echo "📁 History folder : $FOLDER_NAME"
-          echo "🔗 Stable run URL : /runs/${WORKFLOW}/${RUN_ID}/"
+          echo "History folder : $FOLDER_NAME"
+          echo "Stable run URL : /runs/${WORKFLOW}/${RUN_ID}/"
 
-          # ── Copy report into per-run-ID folder (stable URL) ────────────────
+          # Per-run-ID folder (stable URL)
           mkdir -p "gh-pages/runs/${WORKFLOW}/${RUN_ID}"
           rsync -a --exclude='*.webm' --exclude='*.zip' new-report/ "gh-pages/runs/${WORKFLOW}/${RUN_ID}/"
 
-          # ── Copy into descriptive history folder ───────────────────────────
+          # Descriptive history folder
           mkdir -p "gh-pages/history/${FOLDER_NAME}"
           rsync -a --exclude='*.webm' --exclude='*.zip' new-report/ "gh-pages/history/${FOLDER_NAME}/"
 
-          # ── Copy as "latest" under /latest/ ────────────────────────────────
+          # Latest
           mkdir -p gh-pages/latest
           rsync -a --delete new-report/ gh-pages/latest/
 
-          # ── Prune history: keep only last 20 entries ───────────────────────
+          # Prune history: keep last 20
           cd gh-pages/history
           DIRS=$(ls -d */ 2>/dev/null | sort || true)
           COUNT=$(echo "$DIRS" | grep -c . || true)
           if [ "$COUNT" -gt 20 ]; then
             REMOVE=$((COUNT - 20))
             echo "$DIRS" | head -n "$REMOVE" | while read -r d; do
-              echo "🗑  Pruning old history entry: $d"
+              echo "Pruning old history entry: $d"
               rm -rf "$d"
             done
           fi
           cd ../..
 
-          # ── Prune runs: keep only last 20 per workflow ─────────────────────
+          # Prune runs: keep last 20 per workflow
           if [ -d "gh-pages/runs/${WORKFLOW}" ]; then
             cd "gh-pages/runs/${WORKFLOW}"
             DIRS=$(ls -d */ 2>/dev/null | sort -n || true)
@@ -271,7 +215,7 @@ jobs:
             if [ "$COUNT" -gt 20 ]; then
               REMOVE=$((COUNT - 20))
               echo "$DIRS" | head -n "$REMOVE" | while read -r d; do
-                echo "🗑  Pruning old run entry: $d"
+                echo "Pruning old run entry: $d"
                 rm -rf "$d"
               done
             fi
@@ -281,9 +225,6 @@ jobs:
       - name: Generate dashboard and history pages
         run: |
           set -euo pipefail
-
-          REPO="${{ github.repository }}"
-          SERVER_URL="${{ github.server_url }}"
 
           # ── Build root index.html (dashboard) ──────────────────────────────
           cat > gh-pages/index.html << 'DASHBOARD_EOF'
@@ -326,7 +267,6 @@ jobs:
           <body>
             <h1>🧪 Test Reports Dashboard</h1>
             <p class="subtitle">Each workflow run has its own stable URL — concurrent runs are safe.</p>
-
             <div class="cards">
               <a class="card" href="latest/">
                 <h2>📄 Latest Report <span class="badge badge-latest">latest</span></h2>
@@ -341,18 +281,15 @@ jobs:
                 <p>Look up a specific workflow run by its GitHub run ID.</p>
               </a>
             </div>
-
             <hr/>
             <h3>Recent Runs</h3>
             <table>
               <thead><tr><th>Environment</th><th>Functionality</th><th>Date &amp; Time (UTC)</th><th>Report</th></tr></thead>
               <tbody id="recent"></tbody>
             </table>
-
             <script>
           DASHBOARD_EOF
 
-          # Inject the entries array from the history folder
           echo '      const entries = [' >> gh-pages/index.html
           if [ -d gh-pages/history ]; then
             ls -d gh-pages/history/*/ 2>/dev/null | sort -r | head -10 | while read -r d; do
@@ -396,7 +333,7 @@ jobs:
           </html>
           DASHBOARD_JS_EOF
 
-          # ── Generate history/index.html ──────────────────────────────────────
+          # ── history/index.html ───────────────────────────────────────────────
           cat > gh-pages/history/index.html << 'HIST_HEAD_EOF'
           <!DOCTYPE html>
           <html lang="en">
@@ -446,19 +383,11 @@ jobs:
           cat >> gh-pages/history/index.html << 'HIST_JS_EOF'
               const tbody = document.getElementById('entries');
               entries.forEach(name => {
-                let env, func, displayTs;
-                if (name.startsWith('run-')) {
-                  env = '—';
-                  func = name.split('--')[0] || name;
-                  const ts = name.split('--')[1] || '';
-                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, o, s) => o > 9 ? ':' : '-');
-                } else {
-                  const parts = name.split('--');
-                  env = parts[0] || '';
-                  func = parts.length > 2 ? parts.slice(1, -1).join(', ') : (parts[1] || '');
-                  const ts = parts[parts.length - 1] || '';
-                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, o, s) => o > 9 ? ':' : '-');
-                }
+                const parts = name.split('--');
+                let env = parts[0] || '';
+                let func = parts.length > 2 ? parts.slice(1, -1).join(', ') : (parts[1] || '');
+                const ts = parts[parts.length - 1] || '';
+                const displayTs = ts.replace('_', ' ').replace(/-/g, (m, o, s) => o > 9 ? ':' : '-');
                 const envClass = ['dev','staging','prod'].includes(env) ? 'env-' + env : 'env-default';
                 const tr = document.createElement('tr');
                 tr.innerHTML =
@@ -478,7 +407,7 @@ jobs:
           </html>
           HIST_JS_EOF
 
-          # ── Generate runs/index.html ─────────────────────────────────────────
+          # ── runs/index.html ──────────────────────────────────────────────────
           mkdir -p gh-pages/runs
           cat > gh-pages/runs/index.html << 'RUNS_HEAD_EOF'
           <!DOCTYPE html>
@@ -513,7 +442,6 @@ jobs:
             <script>
           RUNS_HEAD_EOF
 
-          # Collect run entries from the filesystem
           echo '      const runs = [' >> gh-pages/runs/index.html
           for wf_dir in gh-pages/runs/*/; do
             [ -d "$wf_dir" ] || continue
@@ -546,7 +474,7 @@ jobs:
           </html>
           RUNS_JS_EOF
 
-          echo "✅ Dashboard and index pages generated."
+          echo "Dashboard and index pages generated."
 
       - name: Commit and push to gh-pages
         run: |
@@ -558,9 +486,8 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Deploy report for run ${{ github.run_id }}"
+            git commit -m "Deploy wdio-api report for run ${{ github.run_id }}"
 
-            # Push with retry in case another workflow run pushed concurrently
             PUSHED=false
             for attempt in 1 2 3 4 5; do
               if git push origin gh-pages; then
