@@ -10,7 +10,7 @@ A **WebDriverIO v9 + TypeScript** test-automation skeleton that supports both **
 sf-webdriverio/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                 # CI pipeline (matrix × browser × env, Allure, GH Pages)
+│       └── wdio.yml               # CI pipeline (4-job: prepare → test → merge-reports → deploy)
 ├── pages/
 │   ├── base.page.ts               # Base page object (navigate, waitForPageLoad, getTitle, takeScreenshot)
 │   ├── todo.page.ts               # TodoMVC page object (add, complete, delete, filter todos)
@@ -142,7 +142,7 @@ This means **sample tests work immediately after cloning** — no `.env.dev` fil
 
 ## ⚙️ CI / GitHub Actions
 
-The workflow (`.github/workflows/ci.yml`) runs on push/PR to `main`, `master`, or `develop`, plus `workflow_dispatch`.
+The workflow (`.github/workflows/wdio.yml`) runs on push/PR to `main`, plus `workflow_dispatch` with comma-separated targets.
 
 ### Pipeline
 
