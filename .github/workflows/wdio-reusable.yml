@@ -210,7 +210,7 @@ jobs:
       cancel-in-progress: false
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url }}runs/${{ inputs.workflow_name }}/${{ github.run_id }}/
     steps:
       - name: Download merged HTML report
         uses: actions/download-artifact@v4
