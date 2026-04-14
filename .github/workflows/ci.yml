@@ -18,7 +18,7 @@ on:
         required: true
         default: 'all'
         type: choice
-        options: [all, ui, api]
+        options: [all, web, api]
 
 # Minimal default permissions — jobs escalate only what they need
 permissions:
@@ -67,13 +67,10 @@ jobs:
         browser: [chrome, firefox]
         environment: [dev, staging]
 
-    # Per-environment secrets are referenced explicitly (not via dynamic lookup)
-    # to avoid exposing all repository secrets to the workflow runner.
     env:
-      ENV: ${{ matrix.environment }}
+      TEST_ENV: ${{ matrix.environment }}
       BROWSER: ${{ matrix.browser }}
-      # Each environment maps to its own named secret.
-      # Defaults (Sauce Demo / JSONPlaceholder) are used when secrets are not configured.
+      CI: 'true'
       BASE_URL_DEV: ${{ secrets.BASE_URL_DEV }}
       BASE_URL_STAGING: ${{ secrets.BASE_URL_STAGING }}
       API_BASE_URL_DEV: ${{ secrets.API_BASE_URL_DEV }}
@@ -112,27 +109,27 @@ jobs:
 
       - name: Resolve environment variables for ${{ matrix.environment }}
         run: |
-          # Select the env-specific named variable (not a dynamic secret lookup)
           if [ "${{ matrix.environment }}" = "dev" ]; then
-            echo "BASE_URL=${BASE_URL_DEV:-https://www.saucedemo.com}" >> "$GITHUB_ENV"
+            echo "BASE_URL=${BASE_URL_DEV:-https://demo.playwright.dev/todomvc}" >> "$GITHUB_ENV"
             echo "API_BASE_URL=${API_BASE_URL_DEV:-https://jsonplaceholder.typicode.com}" >> "$GITHUB_ENV"
-            echo "TEST_USERNAME=${TEST_USERNAME_DEV:-standard_user}" >> "$GITHUB_ENV"
-            echo "TEST_PASSWORD=${TEST_PASSWORD_DEV:-secret_sauce}" >> "$GITHUB_ENV"
+            echo "TEST_USERNAME=${TEST_USERNAME_DEV:-your_username@example.com}" >> "$GITHUB_ENV"
+            echo "TEST_PASSWORD=${TEST_PASSWORD_DEV:-your_password}" >> "$GITHUB_ENV"
           else
-            echo "BASE_URL=${BASE_URL_STAGING:-https://www.saucedemo.com}" >> "$GITHUB_ENV"
+            echo "BASE_URL=${BASE_URL_STAGING:-https://demo.playwright.dev/todomvc}" >> "$GITHUB_ENV"
             echo "API_BASE_URL=${API_BASE_URL_STAGING:-https://jsonplaceholder.typicode.com}" >> "$GITHUB_ENV"
-            echo "TEST_USERNAME=${TEST_USERNAME_STAGING:-standard_user}" >> "$GITHUB_ENV"
-            echo "TEST_PASSWORD=${TEST_PASSWORD_STAGING:-secret_sauce}" >> "$GITHUB_ENV"
+            echo "TEST_USERNAME=${TEST_USERNAME_STAGING:-your_username@example.com}" >> "$GITHUB_ENV"
+            echo "TEST_PASSWORD=${TEST_PASSWORD_STAGING:-your_password}" >> "$GITHUB_ENV"
           fi
 
       - name: Run tests — ${{ matrix.browser }} / ${{ matrix.environment }}
         run: |
-          SUITE=${{ github.event.inputs.suite || 'all' }}
-          CONFIG="src/config/wdio.${{ matrix.browser }}.conf.ts"
-          if [ "$SUITE" = "all" ]; then
-            npx wdio run $CONFIG
+          SUITE="${{ github.event.inputs.suite || 'all' }}"
+          if [ "$SUITE" = "web" ]; then
+            npx wdio run wdio.conf.ts --spec tests/web/
+          elif [ "$SUITE" = "api" ]; then
+            npx wdio run wdio.conf.ts --spec tests/api/
           else
-            npx wdio run $CONFIG --suite $SUITE
+            npx wdio run wdio.conf.ts
           fi
         continue-on-error: true
 
@@ -142,6 +139,15 @@ jobs:
         with:
           name: allure-results-${{ matrix.browser }}-${{ matrix.environment }}
           path: allure-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.browser }}-${{ matrix.environment }}
+          path: test-results/
           retention-days: 7
           if-no-files-found: warn
 

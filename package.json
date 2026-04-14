@@ -5,15 +5,16 @@
   "author": "",
   "license": "MIT",
   "scripts": {
-    "test": "wdio run src/config/wdio.base.conf.ts",
-    "test:chrome": "BROWSER=chrome wdio run src/config/wdio.chrome.conf.ts",
-    "test:firefox": "BROWSER=firefox wdio run src/config/wdio.firefox.conf.ts",
-    "test:ui": "wdio run src/config/wdio.base.conf.ts --suite ui",
-    "test:api": "wdio run src/config/wdio.base.conf.ts --suite api",
-    "test:env:dev": "ENV=dev wdio run src/config/wdio.base.conf.ts",
-    "test:env:staging": "ENV=staging wdio run src/config/wdio.base.conf.ts",
-    "report:generate": "allure generate allure-results --clean -o allure-report",
-    "report:open": "allure open allure-report"
+    "test": "wdio run wdio.conf.ts",
+    "test:web": "wdio run wdio.conf.ts --spec tests/web/",
+    "test:api": "wdio run wdio.conf.ts --spec tests/api/",
+    "test:sample": "wdio run wdio.conf.ts --spec tests/web/ --spec tests/api/",
+    "test:dev": "TEST_ENV=dev wdio run wdio.conf.ts",
+    "test:staging": "TEST_ENV=staging wdio run wdio.conf.ts",
+    "test:prod": "TEST_ENV=prod wdio run wdio.conf.ts",
+    "test:headed": "HEADLESS=false wdio run wdio.conf.ts",
+    "test:debug": "node --inspect-brk ./node_modules/.bin/wdio run wdio.conf.ts",
+    "test:report": "allure generate allure-results --clean -o allure-report && allure open allure-report"
   },
   "dependencies": {
     "axios": "^1.7.2",

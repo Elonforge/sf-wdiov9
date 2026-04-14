@@ -9,17 +9,13 @@
     "outDir": "dist",
     "rootDir": ".",
     "baseUrl": ".",
-    "types": ["node", "mocha"],
+    "types": ["node", "mocha", "@wdio/globals/types"],
     "paths": {
-      "@pages/*": ["src/pages/*"],
-      "@helpers/*": ["src/helpers/*"],
-      "@data/*": ["src/data/*"],
-      "@types-app/*": ["src/types/*"],
-      "@config/*": ["src/config/*"]
+      "@pages/*": ["pages/*"]
     },
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
-  "exclude": ["node_modules", "dist", "allure-report", "allure-results"]
+  "include": ["wdio.conf.ts", "pages/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist", "allure-report", "allure-results", "test-results"]
 }

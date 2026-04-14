@@ -1,6 +1,6 @@
 # sf-webdriverio
 
-A **WebDriverIO v9 + TypeScript** test-automation skeleton that supports both **web UI testing** and **REST API testing**, uses a **Page Object Model**, supports **multi-environment configuration** via dotenv, and includes a **GitHub Actions CI** workflow with a dynamic matrix strategy, blob/merged Allure reporting, and GitHub Pages deployment with history.
+A **WebDriverIO v9 + TypeScript** test-automation skeleton that supports both **web UI testing** and **REST API testing**, uses a **Page Object Model**, supports **multi-environment configuration** via dotenv with a fallback chain, and includes a **GitHub Actions CI** workflow with a dynamic matrix strategy, blob/merged Allure reporting, and GitHub Pages deployment with history.
 
 ---
 
@@ -10,34 +10,21 @@ A **WebDriverIO v9 + TypeScript** test-automation skeleton that supports both **
 sf-webdriverio/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml              # CI pipeline (matrix × browser × env, Allure, GH Pages)
-├── src/
-│   ├── config/
-│   │   ├── wdio.base.conf.ts   # Shared WebDriverIO configuration
-│   │   ├── wdio.chrome.conf.ts # Chrome-specific overrides
-│   │   └── wdio.firefox.conf.ts# Firefox-specific overrides
-│   ├── data/
-│   │   ├── envConfig.ts        # Typed environment variable loader
-│   │   └── testData.ts         # Static test fixtures
-│   ├── helpers/
-│   │   └── ApiHelper.ts        # Axios-based REST API helper
-│   ├── pages/
-│   │   ├── BasePage.ts         # Abstract base page with shared helpers
-│   │   ├── LoginPage.ts        # Login page object
-│   │   └── HomePage.ts         # Home/inventory page object
-│   └── types/
-│       └── index.ts            # Shared TypeScript interfaces & types
-├── test/
-│   ├── specs/
-│   │   ├── api/
-│   │   │   └── users.api.spec.ts  # REST API test examples
-│   │   └── ui/
-│   │       └── login.spec.ts      # UI test examples (Page Object Model)
-│   └── utils/
-│       └── mergeDeep.ts           # Deep-merge utility for WDIO configs
-├── .env.dev                    # Dev environment variables (placeholder values)
-├── .env.staging                # Staging environment variables (placeholder values)
-├── .env.example                # Template — copy to .env.<env> and fill in values
+│       └── ci.yml                 # CI pipeline (matrix × browser × env, Allure, GH Pages)
+├── pages/
+│   ├── base.page.ts               # Base page object (navigate, waitForPageLoad, getTitle, takeScreenshot)
+│   ├── todo.page.ts               # TodoMVC page object (add, complete, delete, filter todos)
+│   ├── login.page.ts              # Login page object (login, error handling, assertions)
+│   └── home.page.ts               # Home/dashboard page object (heading, nav, logout)
+├── tests/
+│   ├── web/
+│   │   └── todo.spec.ts           # 6 TodoMVC web UI tests
+│   ├── api/
+│   │   └── users.spec.ts          # 6 JSONPlaceholder API tests
+│   ├── login.spec.ts              # 4 login tests (skipped with placeholder creds)
+│   └── home.spec.ts               # 4 home page tests (skipped with placeholder creds)
+├── .env.example                   # Committed — fallback env vars (sample tests work out of the box)
+├── wdio.conf.ts                   # WebDriverIO configuration (dotenv, capabilities, reporters, hooks)
 ├── package.json
 ├── tsconfig.json
 └── README.md
@@ -50,7 +37,7 @@ sf-webdriverio/
 ### Prerequisites
 
 - **Node.js** ≥ 18
-- **Chrome** or **Firefox** installed locally
+- **Chrome** and/or **Firefox** installed locally
 
 ### Install
 
@@ -58,138 +45,116 @@ sf-webdriverio/
 npm install
 ```
 
-### Configure environment
-
-```bash
-# Copy and fill in your own values
-cp .env.example .env.dev
-```
-
 ### Run tests
 
+Sample tests (TodoMVC + JSONPlaceholder API) work immediately — no configuration needed.
+
 ```bash
-# Run all tests (Chrome, dev environment)
+# Run all tests (all capabilities)
 npm test
 
-# Run UI tests only
-npm run test:ui
+# Run web UI tests only
+npm run test:web
 
 # Run API tests only
 npm run test:api
 
-# Run on a specific browser
-npm run test:chrome
-npm run test:firefox
+# Run sample tests (web + api)
+npm run test:sample
 
 # Run against a specific environment
-npm run test:env:dev
-npm run test:env:staging
-```
+npm run test:dev
+npm run test:staging
+npm run test:prod
 
-### Generate & open Allure report
+# Run headed (visible browser)
+npm run test:headed
 
-```bash
-npm run report:generate
-npm run report:open
+# Debug mode
+npm run test:debug
+
+# Generate & open Allure report
+npm run test:report
 ```
 
 ---
 
-## 🌍 Multi-Environment Configuration (dotenv)
+## 🌍 Environment Configuration (dotenv)
 
-The framework loads the correct `.env.<ENV>` file at startup based on the `ENV` environment variable (defaults to `dev`).
+The framework uses a **dotenv fallback chain**:
 
-| Variable | Description |
-|---|---|
-| `ENV` | Target environment (`dev` \| `staging` \| `prod`) |
-| `BASE_URL` | Application URL for UI tests |
-| `API_BASE_URL` | Base URL for REST API tests |
-| `TEST_USERNAME` | Login username for UI tests |
-| `TEST_PASSWORD` | Login password for UI tests |
+1. Load `.env.{TEST_ENV}` (where `TEST_ENV` defaults to `dev`) — this file may not exist
+2. Load `.env.example` as fallback (`override: false` — won't overwrite existing vars)
 
-> **Tip:** The `.env.dev` and `.env.staging` files committed here contain only placeholder values. Override them with real values locally or via GitHub Secrets in CI.
+This means **sample tests work immediately after cloning** — no `.env.dev` file needed.
+
+### Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `BASE_URL` | Application URL for web tests | `https://demo.playwright.dev/todomvc` |
+| `TODO_APP_URL` | TodoMVC app URL | `https://demo.playwright.dev/todomvc` |
+| `API_BASE_URL` | Base URL for REST API tests | `https://jsonplaceholder.typicode.com` |
+| `API_TEST_USER_NAME` | Name for API POST/PUT tests | `Jane Doe` |
+| `API_TEST_USER_JOB` | Job for API POST/PUT tests | `Test Engineer` |
+| `TEST_USERNAME` | Login username (custom app) | `your_username@example.com` |
+| `TEST_PASSWORD` | Login password (custom app) | `your_password` |
+| `HEADLESS` | Run browsers headless | `true` |
+| `TEST_ENV` | Environment name | `dev` |
+
+> **Note:** `.env.dev`, `.env.staging`, `.env.prod` are all git-ignored. Only `.env.example` is committed.
 
 ---
 
 ## 🏗 Architecture
 
+### WebDriverIO Configuration (`wdio.conf.ts`)
+
+- **dotenv fallback chain** — loads `.env.{TEST_ENV}` then `.env.example`
+- **baseUrl** from `process.env.BASE_URL`
+- **Headless** controlled by `HEADLESS` env var
+- **Capabilities**: Chrome + Firefox for web tests (exclude `tests/api/`), dedicated Chrome headless for API tests (only `tests/api/`)
+- **CI mode**: `specFileRetries: 2`, `maxInstances: 1`, `forbidOnly: true`
+- **Local mode**: `specFileRetries: 0`, `maxInstances: 5`
+- **Reporters**: spec (console) + Allure (HTML)
+- **Screenshots on failure** saved to `test-results/screenshots/`
+- **Output directory**: `test-results/`
+
 ### Page Object Model
 
-Every page extends `BasePage`, which provides:
-- `open()` — navigate to the page and wait for a key element
-- `waitForSelector()` / `waitForText()` — explicit waits
-- `clickElement()` / `typeText()` / `getText()` — safe interaction helpers
-- `isVisible()` — non-throwing visibility check
-- `takeScreenshot()` — save screenshot to `allure-results/`
+| Page Object | Description |
+|---|---|
+| `BasePage` | `navigate(path)`, `waitForPageLoad()`, `getTitle()`, `takeScreenshot(name)` |
+| `TodoPage` | TodoMVC: `goto()`, `addTodo()`, `getTodoCount()`, `completeTodo()`, `deleteTodo()`, `getRemainingText()`, filters, assertions |
+| `LoginPage` | Login form: `goto()`, `login()`, `loginAndExpectRedirect()`, `getErrorMessage()`, `assertOnLoginPage()` |
+| `HomePage` | Dashboard: `goto()`, `logout()`, `getHeadingText()`, `assertOnHomePage()`, `getNavigationLinkCount()` |
 
-Concrete pages (e.g. `LoginPage`, `HomePage`) add their own selectors and actions and are instantiated directly in spec files.
+### Test Specs
 
-### REST API Helper
-
-`ApiHelper` wraps Axios and provides typed `get / post / put / patch / delete` methods that:
-- Never throw on non-2xx status codes (let tests assert the status)
-- Return a consistent `ApiResponse<T>` shape (`status`, `data`, `headers`)
-- Support optional Bearer-token injection via `setBearerToken()`
-
-### Config merging
-
-`wdio.chrome.conf.ts` and `wdio.firefox.conf.ts` use a `mergeDeep()` utility to merge browser-specific options on top of `wdio.base.conf.ts`, keeping the base config as the single source of truth for shared settings.
+| Spec | Tests | Target |
+|---|---|---|
+| `tests/web/todo.spec.ts` | 6 tests | TodoMVC demo (no credentials) |
+| `tests/api/users.spec.ts` | 6 tests | JSONPlaceholder API (no credentials) |
+| `tests/login.spec.ts` | 4 tests | Login form (skipped with placeholder creds) |
+| `tests/home.spec.ts` | 4 tests | Home page (skipped with placeholder creds) |
 
 ---
 
 ## ⚙️ CI / GitHub Actions
 
-The workflow (`.github/workflows/ci.yml`) runs on every push / PR to `main`, `master`, or `develop`, and can be triggered manually via `workflow_dispatch`.
+The workflow (`.github/workflows/ci.yml`) runs on push/PR to `main`, `master`, or `develop`, plus `workflow_dispatch`.
 
-### Pipeline stages
+### Pipeline
 
 ```
 install → test (matrix) → report & deploy
 ```
 
-#### Stage 1 — Install
-
-Installs dependencies and caches `node_modules`.
-
-#### Stage 2 — Test (Dynamic Matrix)
-
-Runs tests in **parallel** across a matrix of:
-
-| Dimension | Values |
+| Stage | Details |
 |---|---|
-| `browser` | `chrome`, `firefox` |
-| `environment` | `dev`, `staging` |
-
-Each matrix combination uploads its raw Allure result files as a **blob artifact** named `allure-results-<browser>-<environment>`.
-
-#### Stage 3 — Report
-
-1. **Downloads** all blob artifacts and merges them into a single `allure-results/` folder.
-2. **Restores Allure history** from the `gh-pages` branch (preserves run history across builds).
-3. **Generates** the merged Allure HTML report via `simple-elf/allure-report-action`.
-4. **Deploys** the report to **GitHub Pages** (`gh-pages` branch) using `peaceiris/actions-gh-pages`.
-5. **Uploads** the generated HTML report as a merged artifact for download.
-
-### GitHub Pages setup
-
-1. Go to **Settings → Pages** in your repository.
-2. Set **Source** to `Deploy from a branch` → branch `gh-pages`, folder `/ (root)`.
-3. The report will be available at `https://<org>.github.io/<repo>/allure-report/`.
-
-### Secrets
-
-Configure these in **Settings → Secrets and variables → Actions**:
-
-| Secret | Example |
-|---|---|
-| `BASE_URL_DEV` | `https://dev.example.com` |
-| `BASE_URL_STAGING` | `https://staging.example.com` |
-| `API_BASE_URL_DEV` | `https://api-dev.example.com` |
-| `API_BASE_URL_STAGING` | `https://api-staging.example.com` |
-| `TEST_USERNAME_DEV` | `dev-user@example.com` |
-| `TEST_PASSWORD_DEV` | `dev-password` |
-| `TEST_USERNAME_STAGING` | `staging-user@example.com` |
-| `TEST_PASSWORD_STAGING` | `staging-password` |
+| **Install** | `npm ci` + `node_modules` cache |
+| **Test** | Matrix: `{chrome, firefox} × {dev, staging}`, uploads Allure blob artifacts |
+| **Report** | Merges blobs, restores history from `gh-pages`, generates Allure report, deploys to GitHub Pages |
 
 ---
 
