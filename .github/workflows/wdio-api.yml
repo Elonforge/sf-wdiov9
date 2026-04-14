@@ -180,7 +180,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: pages-deploy
+      group: pages-deploy-wdio-api
       cancel-in-progress: false
     environment:
       name: github-pages
