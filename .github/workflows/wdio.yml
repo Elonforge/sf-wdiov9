@@ -7,6 +7,13 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      test_env:
+        description: >-
+          Environment to run tests against (e.g. dev, staging, prod).
+          Leave empty to use the default (dev).
+        required: false
+        default: 'dev'
+        type: string
       targets:
         description: >-
           Comma-separated test targets to run in parallel.
@@ -83,6 +90,8 @@ jobs:
 
       - name: Run tests
         shell: pwsh
+        env:
+          TEST_ENV: ${{ github.event.inputs.test_env || 'dev' }}
         run: |
           $Target = "${{ matrix.target }}"
           $Reporters = @("--reporter=spec", "--reporter=allure")
@@ -189,9 +198,33 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $RunNum = "${{ github.run_number }}"
+          $RunNum   = "${{ github.run_number }}"
           $Timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd_HH-mm-ss")
-          $FolderName = "run-${RunNum}--${Timestamp}"
+
+          # ── Environment name (from workflow input, default "dev") ──
+          $EnvName = "${{ github.event.inputs.test_env }}"
+          if ([string]::IsNullOrWhiteSpace($EnvName)) { $EnvName = "dev" }
+
+          # ── Functionality name (targets passed to the matrix) ──
+          $Targets = "${{ github.event.inputs.targets }}"
+          if ([string]::IsNullOrWhiteSpace($Targets)) {
+            $FuncName = "all"
+          } else {
+            # Normalise: strip paths/extensions, replace non-alphanumerics with hyphens
+            $FuncName = ($Targets -split ',' |
+              ForEach-Object { $_.Trim() } |
+              Where-Object { $_ -ne '' } |
+              ForEach-Object {
+                # Use the filename without extension, or the tag/suite name as-is
+                $leaf = [System.IO.Path]::GetFileNameWithoutExtension($_.TrimEnd('/\'))
+                if ($leaf -eq '') { $leaf = $_ }
+                $leaf -replace '[^a-zA-Z0-9@_-]', '-'
+              }) -join '+'
+            if ($FuncName.Length -gt 80) { $FuncName = $FuncName.Substring(0, 80) }
+          }
+
+          $FolderName = "${EnvName}--${FuncName}--${Timestamp}"
+          Write-Host "📁 History folder: $FolderName"
 
           # ── Ensure directories exist ──
           New-Item -ItemType Directory -Force -Path "site/history" | Out-Null
@@ -220,7 +253,9 @@ jobs:
           }
 
           # ── Prune history: keep only last 20 entries ──
-          $entries = Get-ChildItem -Path site/history -Directory -Filter 'run-*' -ErrorAction SilentlyContinue | Sort-Object Name
+          # Match both new ({env}--{func}--{ts}) and legacy (run-*) folder patterns
+          $entries = Get-ChildItem -Path site/history -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '--' -or $_.Name -match '^run-' } | Sort-Object Name
           if ($entries -and $entries.Count -gt 20) {
             $removeCount = $entries.Count - 20
             $entries | Select-Object -First $removeCount | ForEach-Object {
@@ -245,44 +280,76 @@ jobs:
               .back { display: inline-block; margin-bottom: 1.5rem; color: #1a73e8;
                       text-decoration: none; font-size: 0.95rem; }
               .back:hover { text-decoration: underline; }
-              ul { list-style: none; }
-              li { background: #fff; margin-bottom: 0.5rem; border-radius: 6px;
-                   box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-              li a { display: block; padding: 0.75rem 1rem; color: #1a73e8;
-                     text-decoration: none; font-size: 0.95rem; }
-              li a:hover { background: #e8f0fe; border-radius: 6px; }
+              table { width: 100%; border-collapse: collapse; background: #fff;
+                      border-radius: 8px; overflow: hidden;
+                      box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+              th { background: #1a73e8; color: #fff; text-align: left;
+                   padding: 0.75rem 1rem; font-size: 0.9rem; }
+              td { padding: 0.75rem 1rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+              tr:last-child td { border-bottom: none; }
+              tr:hover td { background: #e8f0fe; }
+              td a { color: #1a73e8; text-decoration: none; }
+              td a:hover { text-decoration: underline; }
+              .badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
+                       font-size: 0.8rem; font-weight: 600; }
+              .env-dev { background: #e8f5e9; color: #2e7d32; }
+              .env-staging { background: #fff3e0; color: #e65100; }
+              .env-prod { background: #fce4ec; color: #c62828; }
+              .env-default { background: #e3f2fd; color: #1565c0; }
             </style>
           </head>
           <body>
             <h1>📊 Test Report History</h1>
             <a class="back" href="../">← Latest Report</a>
-            <ul id="entries"></ul>
+            <table>
+              <thead><tr><th>Environment</th><th>Functionality</th><th>Date &amp; Time (UTC)</th><th>Report</th></tr></thead>
+              <tbody id="entries"></tbody>
+            </table>
             <script>
           "@
 
           # Build the entry list dynamically from the filesystem
           $historyHtml += "`n      const entries = [`n"
-          $historyEntries = Get-ChildItem -Path site/history -Directory -Filter 'run-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+          $historyEntries = Get-ChildItem -Path site/history -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '--' -or $_.Name -match '^run-' } | Sort-Object Name -Descending
           foreach ($dir in $historyEntries) {
-            $historyHtml += "        { name: `"$($dir.Name)`", href: `"$($dir.Name)/`" },`n"
+            $historyHtml += "        `"$($dir.Name)`",`n"
           }
           $historyHtml += "      ];`n"
 
           $historyHtml += @"
-              const ul = document.getElementById('entries');
-              entries.forEach(e => {
-                const li = document.createElement('li');
-                const a = document.createElement('a');
-                a.href = e.href;
-                a.textContent = e.name;
-                li.appendChild(a);
-                ul.appendChild(li);
+              const tbody = document.getElementById('entries');
+              entries.forEach(name => {
+                let env, func, displayTs;
+                if (name.startsWith('run-')) {
+                  // Legacy format: run-{num}--{timestamp}
+                  env = '—';
+                  func = name.split('--')[0] || name;
+                  const ts = name.split('--')[1] || '';
+                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, offset) => offset > 9 ? ':' : '-');
+                } else {
+                  // New format: {env}--{functionality}--{timestamp}
+                  const parts = name.split('--');
+                  env = parts[0] || '';
+                  func = parts.length > 2 ? parts.slice(1, -1).join(', ') : (parts[1] || '');
+                  const ts = parts[parts.length - 1] || '';
+                  displayTs = ts.replace('_', ' ').replace(/-/g, (m, offset) => offset > 9 ? ':' : '-');
+                }
+
+                const envClass = ['dev','staging','prod'].includes(env) ? 'env-' + env : 'env-default';
+
+                const tr = document.createElement('tr');
+                tr.innerHTML =
+                  '<td><span class="badge ' + envClass + '">' + env + '</span></td>' +
+                  '<td>' + func.replace(/\+/g, ', ') + '</td>' +
+                  '<td>' + displayTs + '</td>' +
+                  '<td><a href="' + name + '/">View Report</a></td>';
+                tbody.appendChild(tr);
               });
               if (!entries.length) {
-                const li = document.createElement('li');
-                li.style.padding = '0.75rem 1rem';
-                li.textContent = 'No history entries yet.';
-                ul.appendChild(li);
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td colspan="4" style="text-align:center;">No history entries yet.</td>';
+                tbody.appendChild(tr);
               }
             </script>
           </body>
@@ -292,7 +359,8 @@ jobs:
           Set-Content -Path site/history/index.html -Value $historyHtml -Encoding utf8
 
           Write-Host "✅ Site built. History entries:"
-          $histEntries = Get-ChildItem -Path site/history -Directory -Filter 'run-*' -ErrorAction SilentlyContinue | Sort-Object Name
+          $histEntries = Get-ChildItem -Path site/history -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '--' -or $_.Name -match '^run-' } | Sort-Object Name
           if ($histEntries) { $histEntries | ForEach-Object { Write-Host $_.Name } } else { Write-Host "  (none)" }
 
       - name: Save report history to cache
