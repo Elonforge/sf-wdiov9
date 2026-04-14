@@ -31,21 +31,24 @@ jobs:
   # ── Job 1: prepare – Build the matrix from comma-separated input ───────────
   prepare:
     name: Prepare test matrix
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - name: Build matrix
         id: set-matrix
+        shell: pwsh
         run: |
-          INPUT="${{ github.event.inputs.targets }}"
-          if [ -z "$INPUT" ]; then
-            MATRIX='["all"]'
-          else
-            MATRIX=$(echo "$INPUT" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length > 0))')
-          fi
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "📋 Matrix: $MATRIX"
+          $Targets = "${{ github.event.inputs.targets }}"
+          if ([string]::IsNullOrWhiteSpace($Targets)) {
+            $Matrix = '["all"]'
+          } else {
+            $items = $Targets -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+            $Matrix = $items | ConvertTo-Json -Compress
+            if ($Matrix -notmatch '^\[') { $Matrix = "[$Matrix]" }
+          }
+          "matrix=$Matrix" | Out-File -Append -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+          Write-Host "📋 Matrix: $Matrix"
 
   # ── Job 2: test – Run tests in parallel (one job per matrix target) ────────
   test:
@@ -71,25 +74,25 @@ jobs:
         run: npm ci
 
       - name: Install browsers
-        shell: bash
+        shell: pwsh
         run: |
           # WebDriverIO auto-downloads browser drivers (chromedriver/geckodriver) at runtime.
           # Chrome and Firefox are pre-installed on windows-latest GitHub runners.
-          echo "Verifying browser availability on runner..."
-          echo "WDIO manages browser drivers automatically via @wdio/local-runner."
+          Write-Host "Verifying browser availability on runner..."
+          Write-Host "WDIO manages browser drivers automatically via @wdio/local-runner."
 
       - name: Run tests
-        shell: bash
+        shell: pwsh
         run: |
-          TARGET="${{ matrix.target }}"
-          REPORTERS="--reporter=spec --reporter=allure"
-          if [ "$TARGET" = "all" ]; then
-            npx wdio run wdio.conf.ts $REPORTERS
-          elif [[ "$TARGET" == @* ]]; then
-            npx wdio run wdio.conf.ts --mochaOpts.grep "$TARGET" $REPORTERS
-          else
-            npx wdio run wdio.conf.ts --spec "$TARGET" $REPORTERS
-          fi
+          $Target = "${{ matrix.target }}"
+          $Reporters = @("--reporter=spec", "--reporter=allure")
+          if ($Target -eq "all") {
+            npx wdio run wdio.conf.ts @Reporters
+          } elseif ($Target.StartsWith("@")) {
+            npx wdio run wdio.conf.ts --mochaOpts.grep $Target @Reporters
+          } else {
+            npx wdio run wdio.conf.ts --spec $Target @Reporters
+          }
 
       - name: Upload blob report
         if: ${{ !cancelled() }}
@@ -107,7 +110,7 @@ jobs:
     name: Merge reports
     needs: [test]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -130,20 +133,21 @@ jobs:
           merge-multiple: true
 
       - name: Merge into single Allure HTML report
+        shell: pwsh
         run: |
           # Collect all allure-results from downloaded blobs
-          mkdir -p merged-allure-results
-          if [ -d all-blob-reports/allure-results ]; then
-            cp -r all-blob-reports/allure-results/* merged-allure-results/ 2>/dev/null || true
-          fi
+          New-Item -ItemType Directory -Force -Path merged-allure-results | Out-Null
+          if (Test-Path all-blob-reports/allure-results) {
+            Copy-Item -Path all-blob-reports/allure-results/* -Destination merged-allure-results/ -Recurse -Force -ErrorAction SilentlyContinue
+          }
           # Also grab any loose allure result files
-          find all-blob-reports -name '*.json' -path '*/allure-results/*' -exec cp {} merged-allure-results/ \; 2>/dev/null || true
-          find all-blob-reports -name '*.xml' -path '*/allure-results/*' -exec cp {} merged-allure-results/ \; 2>/dev/null || true
-          find all-blob-reports -name '*.txt' -path '*/allure-results/*' -exec cp {} merged-allure-results/ \; 2>/dev/null || true
-          find all-blob-reports -name '*.png' -path '*/allure-results/*' -exec cp {} merged-allure-results/ \; 2>/dev/null || true
+          Get-ChildItem -Path all-blob-reports -Recurse -Include '*.json','*.xml','*.txt','*.png' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'allure-results' } |
+            ForEach-Object { Copy-Item $_.FullName -Destination merged-allure-results/ -Force -ErrorAction SilentlyContinue }
 
-          echo "📁 Merged allure results:"
-          ls -la merged-allure-results/ || echo "  (empty)"
+          Write-Host "📁 Merged allure results:"
+          $items = Get-ChildItem merged-allure-results/ -ErrorAction SilentlyContinue
+          if ($items) { $items | Format-Table -AutoSize } else { Write-Host "  (empty)" }
 
           # Generate Allure HTML report
           npx allure generate merged-allure-results --clean -o allure-report
@@ -160,7 +164,7 @@ jobs:
     name: Deploy report to Pages
     needs: [merge-reports]
     if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 10
     environment:
       name: github-pages
@@ -181,46 +185,52 @@ jobs:
             wdio-report-history-
 
       - name: Build site with history
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = 'Stop'
 
-          RUN_NUM="${{ github.run_number }}"
-          TIMESTAMP=$(date -u +"%Y-%m-%d_%H-%M-%S")
-          FOLDER_NAME="run-${RUN_NUM}--${TIMESTAMP}"
+          $RunNum = "${{ github.run_number }}"
+          $Timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd_HH-mm-ss")
+          $FolderName = "run-${RunNum}--${Timestamp}"
 
           # ── Ensure directories exist ──
-          mkdir -p site/history
+          New-Item -ItemType Directory -Force -Path "site/history" | Out-Null
 
           # ── Copy new report into history (strip heavy files) ──
-          mkdir -p "site/history/${FOLDER_NAME}"
-          rsync -a --exclude='*.webm' --exclude='*.zip' \
-            new-report/ "site/history/${FOLDER_NAME}/"
+          New-Item -ItemType Directory -Force -Path "site/history/$FolderName" | Out-Null
+          Get-ChildItem -Path new-report -Recurse -File |
+            Where-Object { $_.Extension -notin @('.webm', '.zip') } |
+            ForEach-Object {
+              $relativePath = $_.FullName.Substring((Resolve-Path new-report).Path.Length)
+              $destPath = Join-Path "site/history/$FolderName" $relativePath
+              $destDir = Split-Path $destPath -Parent
+              if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+              Copy-Item $_.FullName -Destination $destPath -Force
+            }
 
           # ── Copy full new report as the "latest" at site root ──
-          rsync -a new-report/ site/
+          Copy-Item -Path new-report/* -Destination site/ -Recurse -Force
 
           # ── Inject floating "📊 History" link into site/index.html ──
-          if [ -f site/index.html ]; then
-            HISTORY_LINK='<a href="history/" style="position:fixed;bottom:20px;right:20px;z-index:9999;background:#1a73e8;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-family:sans-serif;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,0.2);">📊 History</a>'
-            sed -i "s|</body>|${HISTORY_LINK}</body>|" site/index.html
-          fi
+          if (Test-Path site/index.html) {
+            $HistoryLink = '<a href="history/" style="position:fixed;bottom:20px;right:20px;z-index:9999;background:#1a73e8;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-family:sans-serif;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,0.2);">📊 History</a>'
+            $content = Get-Content site/index.html -Raw
+            $content = $content -replace '</body>', "${HistoryLink}</body>"
+            Set-Content -Path site/index.html -Value $content -NoNewline
+          }
 
           # ── Prune history: keep only last 20 entries ──
-          cd site/history
-          ENTRIES=$(ls -1d run-* 2>/dev/null | sort || true)
-          COUNT=$(echo "$ENTRIES" | grep -c . || true)
-          if [ "$COUNT" -gt 20 ]; then
-            REMOVE_COUNT=$((COUNT - 20))
-            echo "$ENTRIES" | head -n "$REMOVE_COUNT" | while read -r old; do
-              echo "🗑  Pruning old report: $old"
-              rm -rf "$old"
-            done
-          fi
-          cd ../..
+          $entries = Get-ChildItem -Path site/history -Directory -Filter 'run-*' -ErrorAction SilentlyContinue | Sort-Object Name
+          if ($entries -and $entries.Count -gt 20) {
+            $removeCount = $entries.Count - 20
+            $entries | Select-Object -First $removeCount | ForEach-Object {
+              Write-Host "🗑  Pruning old report: $($_.Name)"
+              Remove-Item $_.FullName -Recurse -Force
+            }
+          }
 
           # ── Generate site/history/index.html ──
-          cat > site/history/index.html << 'HISTEOF'
+          $historyHtml = @"
           <!DOCTYPE html>
           <html lang="en">
           <head>
@@ -248,17 +258,17 @@ jobs:
             <a class="back" href="../">← Latest Report</a>
             <ul id="entries"></ul>
             <script>
-          HISTEOF
+          "@
 
           # Build the entry list dynamically from the filesystem
-          echo '      const entries = [' >> site/history/index.html
-          ls -1d site/history/run-* 2>/dev/null | sort -r | while read -r dir; do
-            name=$(basename "$dir")
-            echo "        { name: \"${name}\", href: \"${name}/\" }," >> site/history/index.html
-          done
-          echo '      ];' >> site/history/index.html
+          $historyHtml += "`n      const entries = [`n"
+          $historyEntries = Get-ChildItem -Path site/history -Directory -Filter 'run-*' -ErrorAction SilentlyContinue | Sort-Object Name -Descending
+          foreach ($dir in $historyEntries) {
+            $historyHtml += "        { name: `"$($dir.Name)`", href: `"$($dir.Name)/`" },`n"
+          }
+          $historyHtml += "      ];`n"
 
-          cat >> site/history/index.html << 'HISTEOF2'
+          $historyHtml += @"
               const ul = document.getElementById('entries');
               entries.forEach(e => {
                 const li = document.createElement('li');
@@ -277,10 +287,13 @@ jobs:
             </script>
           </body>
           </html>
-          HISTEOF2
+          "@
 
-          echo "✅ Site built. History entries:"
-          ls -1d site/history/run-* 2>/dev/null | sort || echo "  (none)"
+          Set-Content -Path site/history/index.html -Value $historyHtml -Encoding utf8
+
+          Write-Host "✅ Site built. History entries:"
+          $histEntries = Get-ChildItem -Path site/history -Directory -Filter 'run-*' -ErrorAction SilentlyContinue | Sort-Object Name
+          if ($histEntries) { $histEntries | ForEach-Object { Write-Host $_.Name } } else { Write-Host "  (none)" }
 
       - name: Save report history to cache
         uses: actions/cache/save@v4
