@@ -184,7 +184,23 @@ jobs:
           $items = Get-ChildItem merged-allure-results/ -ErrorAction SilentlyContinue
           if ($items) { $items | Format-Table -AutoSize } else { Write-Host "  (empty)" }
 
-          npx allure generate merged-allure-results -o allure-report
+          # Build dynamic report name
+          $FuncName = "${{ inputs.func_name }}"
+          $Suite    = "${{ inputs.test_suite }}"
+          $Targets  = "${{ inputs.targets }}"
+          $Workflow = "${{ inputs.workflow_name }}"
+
+          $Suffix = ""
+          if ($FuncName -ne "") { $Suffix = $FuncName }
+          elseif ($Suite -ne "")   { $Suffix = $Suite }
+          elseif ($Targets -ne "") { $Suffix = $Targets }
+          else                     { $Suffix = $Workflow }
+
+          $ReportName = "WDIO-TestAutomation_Results_Report"
+          if ($Suffix -ne "") { $ReportName = "$ReportName - $Suffix" }
+
+          Write-Host "Report name: $ReportName"
+          npx allure generate merged-allure-results -o allure-report --report-name "$ReportName"
 
       - name: Upload merged HTML report
         uses: actions/upload-artifact@v4
@@ -584,6 +600,64 @@ jobs:
           RUNS_JS_EOF
 
           echo "Dashboard and index pages generated."
+
+      - name: Generate 404.html for SPA routing
+        run: |
+          set -euo pipefail
+
+          # Allure 3 uses history.pushState() for client-side routing.
+          # When a user clicks a link inside the report, the URL path changes
+          # (e.g. /latest/ → /latest/testresult/abc). If the browser does a
+          # full navigation or the page is reloaded, GitHub Pages returns a
+          # 404 because the path doesn't exist as a file. This 404.html
+          # intercepts those requests and redirects back to the report's
+          # index.html so the Allure SPA can handle the route.
+
+          cat > gh-pages/404.html << 'NOTFOUND_EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8"/>
+            <title>Redirecting…</title>
+            <script>
+              (function () {
+                var loc  = window.location;
+                var path = loc.pathname;
+
+                // Known Allure-report directory patterns deployed by this workflow.
+                // Each regex captures the report root (the directory that contains
+                // the Allure index.html).
+                var patterns = [
+                  /^(\/[^/]+\/runs\/[^/]+\/[^/]+\/)/,   // /<repo>/runs/<wf>/<id>/
+                  /^(\/[^/]+\/history\/[^/]+\/)/,        // /<repo>/history/<name>/
+                  /^(\/[^/]+\/latest\/)/                  // /<repo>/latest/
+                ];
+
+                var base;
+                for (var i = 0; i < patterns.length; i++) {
+                  var m = path.match(patterns[i]);
+                  if (m) { base = m[1]; break; }
+                }
+
+                if (base) {
+                  // Redirect to the report root, preserving the hash fragment so
+                  // any hash-based routing state is kept.
+                  loc.replace(base + loc.hash);
+                } else {
+                  // Unrecognised path – fall back to the site dashboard.
+                  var repoBase = path.match(/^(\/[^/]+\/)/);
+                  loc.replace(repoBase ? repoBase[1] : '/');
+                }
+              })();
+            </script>
+          </head>
+          <body>
+            <p>Redirecting to report…</p>
+          </body>
+          </html>
+          NOTFOUND_EOF
+
+          echo "404.html generated for SPA routing."
 
       - name: Commit and push to gh-pages
         run: |
