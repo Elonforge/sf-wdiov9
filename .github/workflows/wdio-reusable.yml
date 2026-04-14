@@ -220,8 +220,8 @@ jobs:
             # Allure's own scripts appear before <script src="app-*.js">, so
             # inserting before the app script ensures correct ordering.
             $html = Get-Content $indexPath -Raw
-            if ($html -match '(?s)(.*)(window\.allureReportDataReady)(.*)') {
-              # Insert our script right before the allureReportDataReady marker
+            if ($html -match '<script\s+src="app-[^"]+\.js"></script>') {
+              # Insert our script right before the app-*.js script tag
               $html = $html -replace '(?s)(<script\s+src="app-[^"]+\.js"></script>)', "$spaScript`n    `$1"
               Set-Content $indexPath -Value $html -NoNewline
               Write-Host "Injected SPA route-restoration script into index.html"
@@ -672,11 +672,12 @@ jobs:
                 }
 
                 if (base) {
-                  // Store the SPA route so the Allure index.html can restore it
-                  // after the page loads and the <base> tag is set correctly.
-                  var route = path.slice(base.length);
-                  if (route) {
-                    try { sessionStorage.setItem('allure-spa-route', '/' + route); } catch(e) {}
+                  // Store the SPA route fragment (path after the report root)
+                  // so the Allure index.html can restore it after the page loads
+                  // and the <base> tag is set correctly.
+                  var spaRoute = path.slice(base.length);
+                  if (spaRoute) {
+                    try { sessionStorage.setItem('allure-spa-route', '/' + spaRoute); } catch(e) {}
                   }
                   // Redirect to the report root, preserving the hash fragment so
                   // any hash-based routing state is kept.
