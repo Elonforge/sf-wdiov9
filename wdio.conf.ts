@@ -14,7 +14,13 @@ dotenvConfig({ path: path.resolve(process.cwd(), '.env.example'), override: fals
 const isCI = !!process.env.CI;
 const isHeadless = (process.env.HEADLESS ?? 'true').toLowerCase() !== 'false';
 
-const firefoxArgs = isHeadless ? ['-headless'] : [];
+const chromeArgs = [
+  '--no-sandbox',
+  '--disable-gpu',
+  '--disable-dev-shm-usage',
+  '--window-size=1920,1080',
+  ...(isHeadless ? ['--headless=new'] : []),
+];
 
 export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCapabilities = {
   // ── Runner ─────────────────────────────────────────────────────────────────
@@ -33,22 +39,14 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
   },
 
   // ── Capabilities ───────────────────────────────────────────────────────────
-  // Web browser capabilities exclude API tests.
-  // API capability runs only tests/api/ with no real browser needed.
+  // Single Chrome capability. Spec selection is handled by the top-level
+  // `specs` glob + `suites` map + CLI flags (--suite / --spec). API tests
+  // re-use the same Chrome session as a lightweight host for HTTP calls.
   maxInstances: isCI ? 1 : 5,
   capabilities: [
     {
-      browserName: 'firefox',
-      'moz:firefoxOptions': { args: firefoxArgs },
-      specs: ['./tests/web/**/*.spec.ts'],
-      exclude: ['./tests/api/**/*.spec.ts'],
-    } as WebdriverIO.Capabilities,
-    {
-      // API tests — use Firefox headless as a lightweight session host
-      browserName: 'firefox',
-      'moz:firefoxOptions': { args: ['-headless'] },
-      specs: ['./tests/api/**/*.spec.ts'],
-      exclude: ['./tests/web/**/*.spec.ts'],
+      browserName: 'chrome',
+      'goog:chromeOptions': { args: chromeArgs },
     } as WebdriverIO.Capabilities,
   ],
 
