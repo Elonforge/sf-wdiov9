@@ -2,8 +2,7 @@ name: Squad Echo — WDIO Tests
 
 # Template squad workflow. Duplicate this file per squad and change:
 #   - the workflow `name:` (top of file)
-#   - `workflow_name`, `artifact_prefix`, `report_artifact_name`,
-#     `concurrency_group`
+#   - `workflow_name`, `artifact_prefix`, `report_artifact_name`
 #   - the `runs_on` JSON array to match the squad's Windows VM runner labels
 
 on:
@@ -15,42 +14,31 @@ on:
         default: 'dev'
         type: choice
         options: [dev, staging, prod]
-      test_suite:
+      targetTests:
         description: >-
-          WDIO suite name(s), comma-separated (e.g. "web", "api", "web,api").
-          Leave empty if selecting targets instead.
-        required: false
-        default: ''
-        type: string
-      targets:
-        description: >-
-          Comma-separated targets. Each entry can be:
-            • a spec file under ./tests/  (e.g. ./tests/web/todo.spec.ts)
-            • a directory                  (e.g. ./tests/api/)
-            • a tag starting with @        (e.g. @smoke)
-          Each entry runs as its own parallel matrix leg. Leave empty to run
-          everything in the selected suite(s).
+          Comma-separated tests. Mix and match freely — each entry runs in
+          its own VM:
+            • suite name       (e.g. web, api)
+            • @tag             (e.g. @smoke)
+            • spec path        (e.g. ./tests/web/todo.spec.ts)
+          Empty = run everything.
         required: false
         default: ''
         type: string
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   run-tests:
     uses: ./.github/workflows/wdio-reusable.yml
     with:
       test_env: ${{ inputs.test_env || 'dev' }}
-      targets: ${{ inputs.targets || '' }}
-      test_suite: ${{ inputs.test_suite || '' }}
+      targetTests: ${{ inputs.targetTests || '' }}
       workflow_name: wdio-squad-echo
       artifact_prefix: blob-report-squad-echo
       report_artifact_name: wdio-squad-echo-report
       func_name: squad-echo
       test_timeout: 30
-      concurrency_group: pages-deploy-wdio-squad-echo
       # Replace with the labels assigned to this squad's Windows VM(s).
       runs_on: '["self-hosted","windows","squad-echo"]'

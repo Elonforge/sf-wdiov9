@@ -1,14 +1,10 @@
 name: WebDriverIO Tests
 
-# Single consolidated caller. Replaces the former wdio-smoke/wdio-api/wdio-web
-# duplicates — choose suite or supply targets via workflow_dispatch inputs.
+# Single consolidated caller. Manual-only by design: any tester, on any
+# branch, can dispatch this from the Actions tab. Each entry in
+# `targetTests` runs as its own matrix leg on its own runner.
 
 on:
-  # Manual-only by design: any tester, on any branch, can dispatch this from
-  # the Actions tab (Actions → "WebDriverIO Tests" → "Run workflow" → pick
-  # branch). This avoids polluting the published report site with a deploy
-  # for every branch push. If you want CI smoke runs on push to main, add a
-  # separate trigger here scoped to `branches: [main]`.
   workflow_dispatch:
     inputs:
       test_env:
@@ -17,34 +13,29 @@ on:
         default: 'dev'
         type: choice
         options: [dev, staging, prod]
-      test_suite:
-        description: 'Suite(s), comma-separated. Empty = all. (e.g. web / api / web,api)'
-        required: false
-        default: ''
-        type: string
-      targets:
+      targetTests:
         description: >-
-          Comma-separated targets (files under ./tests/, directories, or @tags).
-          Each entry becomes a parallel matrix leg. Empty = run everything.
+          Comma-separated tests. Mix and match freely — each entry runs in
+          its own VM:
+            • suite name       (e.g. web, api)
+            • @tag             (e.g. @smoke)
+            • spec path        (e.g. ./tests/web/todo.spec.ts)
+          Empty = run everything.
         required: false
         default: ''
         type: string
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   run-tests:
     uses: ./.github/workflows/wdio-reusable.yml
     with:
       test_env: ${{ inputs.test_env || 'dev' }}
-      targets: ${{ inputs.targets || '' }}
-      test_suite: ${{ inputs.test_suite || '' }}
+      targetTests: ${{ inputs.targetTests || '' }}
       workflow_name: wdio
       artifact_prefix: blob-report
       report_artifact_name: wdio-report
       func_name: ''
       test_timeout: 30
-      concurrency_group: gh-pages-deploy

@@ -7,21 +7,20 @@ on:
         description: 'Environment to run tests against (e.g. dev, staging, prod).'
         type: string
         default: 'dev'
-      targets:
+      targetTests:
         description: >-
-          Comma-separated test targets to run in parallel.
-          Each entry can be a file, a directory, or a @tag passed via --grep.
-          Leave empty to run all tests.
+          Comma-separated tests to run. Each entry becomes its own matrix leg
+          (its own VM). Entries can be mixed:
+            • suite name         (e.g. "web", "api")          → --suite <name>
+            • @tag               (e.g. "@smoke")              → --mochaOpts.grep <tag>
+            • spec path          (e.g. "./tests/web/x.spec.ts") → --spec <path>
+          Leave empty to run everything.
         type: string
         default: ''
       workflow_name:
         description: 'Identifier for this workflow (e.g. wdio, wdio-smoke, wdio-api, wdio-web).'
         type: string
         required: true
-      test_suite:
-        description: 'WDIO suite(s) to run, comma-separated (e.g. "api", "web", "web,api"). Leave empty for all suites.'
-        type: string
-        default: ''
       artifact_prefix:
         description: 'Prefix for blob report artifacts (e.g. blob-report, blob-report-smoke).'
         type: string
@@ -69,11 +68,11 @@ jobs:
         id: set-matrix
         shell: pwsh
         run: |
-          $Targets = "${{ inputs.targets }}"
-          if ([string]::IsNullOrWhiteSpace($Targets)) {
+          $TargetTests = "${{ inputs.targetTests }}"
+          if ([string]::IsNullOrWhiteSpace($TargetTests)) {
             $Matrix = '["all"]'
           } else {
-            $items = $Targets -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+            $items = $TargetTests -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
             $Matrix = $items | ConvertTo-Json -Compress
             if ($Matrix -notmatch '^\[') { $Matrix = "[$Matrix]" }
           }
@@ -117,31 +116,32 @@ jobs:
           TEST_ENV: ${{ inputs.test_env }}
         run: |
           $Target = "${{ matrix.target }}"
-          $Suite  = "${{ inputs.test_suite }}"
 
           # Reporters are configured in wdio.conf.ts (spec + allure + video).
           # Do NOT override them here — CLI --reporter flags replace the config
           # array, which would drop the video reporter and allure custom options.
 
-          # Build optional --suite flags (one per comma-separated suite name).
-          # WDIO accepts repeated --suite flags to run multiple suites together.
-          $SuiteFlag = @()
-          if ($Suite -ne "") {
-            foreach ($s in ($Suite -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })) {
-              $SuiteFlag += @("--suite", $s)
-            }
-          }
-
+          # One matrix leg = one target. Route by prefix:
+          #   "all"        → run everything in wdio.conf.ts
+          #   "@..."       → tag, passed via --mochaOpts.grep
+          #   "./tests/..."→ spec file or directory, passed via --spec
+          #   anything else→ suite name, passed via --suite
           if ($Target -eq "all") {
-            npx wdio run wdio.conf.ts @SuiteFlag
+            Write-Host "Running all tests"
+            npx wdio run wdio.conf.ts
           } elseif ($Target.StartsWith("@")) {
-            npx wdio run wdio.conf.ts @SuiteFlag --mochaOpts.grep $Target
-          } else {
-            # Ensure directory paths get a proper glob pattern
+            Write-Host "Running tag: $Target"
+            npx wdio run wdio.conf.ts --mochaOpts.grep $Target
+          } elseif ($Target.StartsWith("./tests/") -or $Target.StartsWith("./test/")) {
+            # Directory entries get a glob appended so wdio picks up spec files.
             if (-not ($Target -match '\.\w+$')) {
               $Target = $Target.TrimEnd('/\') + "/**/*.spec.ts"
             }
+            Write-Host "Running spec: $Target"
             npx wdio run wdio.conf.ts --spec $Target
+          } else {
+            Write-Host "Running suite: $Target"
+            npx wdio run wdio.conf.ts --suite $Target
           }
 
       - name: Upload blob report
@@ -183,16 +183,14 @@ jobs:
           if ($items) { $items | Format-Table -AutoSize } else { Write-Host "  (empty)" }
 
           # Build dynamic report name
-          $FuncName = "${{ inputs.func_name }}"
-          $Suite    = "${{ inputs.test_suite }}"
-          $Targets  = "${{ inputs.targets }}"
-          $Workflow = "${{ inputs.workflow_name }}"
+          $FuncName    = "${{ inputs.func_name }}"
+          $TargetTests = "${{ inputs.targetTests }}"
+          $Workflow    = "${{ inputs.workflow_name }}"
 
           $Suffix = ""
-          if ($FuncName -ne "") { $Suffix = $FuncName }
-          elseif ($Suite -ne "")   { $Suffix = $Suite }
-          elseif ($Targets -ne "") { $Suffix = $Targets }
-          else                     { $Suffix = $Workflow }
+          if ($FuncName -ne "")       { $Suffix = $FuncName }
+          elseif ($TargetTests -ne "") { $Suffix = $TargetTests }
+          else                         { $Suffix = $Workflow }
 
           $ReportName = "WDIO-TestAutomation_Results_Report"
           if ($Suffix -ne "") { $ReportName = "$ReportName - $Suffix" }
@@ -299,11 +297,11 @@ jobs:
 
           FUNC_NAME="${{ inputs.func_name }}"
           if [ -z "$FUNC_NAME" ]; then
-            TARGETS="${{ inputs.targets }}"
-            if [ -z "$TARGETS" ]; then
+            TARGET_TESTS="${{ inputs.targetTests }}"
+            if [ -z "$TARGET_TESTS" ]; then
               FUNC_NAME="all"
             else
-              FUNC_NAME=$(echo "$TARGETS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | while read -r t; do
+              FUNC_NAME=$(echo "$TARGET_TESTS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | while read -r t; do
                 leaf=$(basename "${t%/}")
                 leaf="${leaf%.*}"
                 echo "$leaf" | sed 's/[^a-zA-Z0-9@_-]/-/g'
@@ -828,21 +826,5 @@ jobs:
       - name: Report URL
         run: |
           REPORT_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/runs/${{ inputs.workflow_name }}/${{ github.run_id }}/"
-          DASHBOARD_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
           echo "Report deployed via gh-pages branch."
           echo "Stable URL: ${REPORT_URL}"
-          {
-            echo "## 📊 Allure Report"
-            echo ""
-            echo "**[▶ Open this run's report](${REPORT_URL})**"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| Workflow | \`${{ inputs.workflow_name }}\` |"
-            echo "| Run ID | \`${{ github.run_id }}\` |"
-            echo "| Branch | \`${{ github.ref_name }}\` |"
-            echo "| Actor | @${{ github.actor }} |"
-            echo "| Commit | \`$(echo ${{ github.sha }} | cut -c1-7)\` |"
-            echo ""
-            echo "[All runs dashboard](${DASHBOARD_URL})"
-          } >> "$GITHUB_STEP_SUMMARY"
