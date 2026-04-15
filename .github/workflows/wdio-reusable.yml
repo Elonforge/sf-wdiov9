@@ -808,5 +808,24 @@ jobs:
 
       - name: Report URL
         run: |
+          REPORT_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/runs/${{ inputs.workflow_name }}/${{ github.run_id }}/"
+          DASHBOARD_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
           echo "Report deployed via gh-pages branch."
-          echo "Stable URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/runs/${{ inputs.workflow_name }}/${{ github.run_id }}/"
+          echo "Stable URL: ${REPORT_URL}"
+          {
+            echo "## 📊 Allure Report"
+            echo ""
+            echo "**[▶ Open this run's report](${REPORT_URL})**"
+            echo ""
+            echo "_Note: GitHub Pages publishes the file via a follow-up \`pages build and deployment\` job (~1 min). If the link 404s, wait for that job to finish and refresh._"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Workflow | \`${{ inputs.workflow_name }}\` |"
+            echo "| Run ID | \`${{ github.run_id }}\` |"
+            echo "| Branch | \`${{ github.ref_name }}\` |"
+            echo "| Actor | @${{ github.actor }} |"
+            echo "| Commit | \`$(echo ${{ github.sha }} | cut -c1-7)\` |"
+            echo ""
+            echo "[All runs dashboard](${DASHBOARD_URL})"
+          } >> "$GITHUB_STEP_SUMMARY"
