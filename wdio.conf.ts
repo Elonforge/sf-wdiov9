@@ -18,6 +18,14 @@ const chromeArgs = [
   '--no-sandbox',
   '--disable-gpu',
   '--disable-dev-shm-usage',
+  '--disable-extensions',
+  '--no-first-run',
+  '--no-default-browser-check',
+  '--remote-debugging-pipe',
+  `--user-data-dir=${path.join(
+    process.env.RUNNER_TEMP ?? process.env.TEMP ?? '/tmp',
+    `chrome-profile-${process.pid}-${Date.now()}`,
+  )}`,
   '--window-size=1920,1080',
   ...(isHeadless ? ['--headless=new'] : []),
 ];
