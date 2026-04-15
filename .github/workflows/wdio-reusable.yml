@@ -114,6 +114,7 @@ jobs:
         shell: pwsh
         env:
           TEST_ENV: ${{ inputs.test_env }}
+          WDIO_TARGET: ${{ matrix.target }}
         run: |
           $Target = "${{ matrix.target }}"
 

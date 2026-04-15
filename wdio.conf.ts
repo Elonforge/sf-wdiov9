@@ -2,6 +2,7 @@ import type { Options, Capabilities } from '@wdio/types';
 import { config as dotenvConfig } from 'dotenv';
 import path from 'path';
 import video from 'wdio-video-reporter';
+import allureReporter from '@wdio/allure-reporter';
 
 // ── dotenv fallback chain ────────────────────────────────────────────────────
 // 1. Load .env.{TEST_ENV} (defaults to "dev") — may not exist, that's OK
@@ -91,9 +92,13 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
       video,
       {
         outputDir: '_results_',
-        saveAllVideos: false,
+        saveAllVideos: true,
         videoSlowdownMultiplier: 3,
         videoFormat: 'mp4',
+        // Default is 5000ms — too tight for ffmpeg on Windows CI, leaves the
+        // Allure attachment as a text stub containing the video path (Allure
+        // then serves it as video/mp4 → 0:00, unplayable). 60s is comfortable.
+        videoRenderTimeout: 60_000,
       },
     ],
   ],
@@ -107,6 +112,18 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
       `\n🚀  Starting tests | TEST_ENV: ${testEnv} | CI: ${isCI} | ` +
       `BASE_URL: ${process.env.BASE_URL} | headless: ${isHeadless}\n`,
     );
+  },
+
+  beforeTest() {
+    // Tag every test with the matrix target from CI so that runs across
+    // matrix legs don't collapse into a single entry via Allure's historyId
+    // (which otherwise dedupes identical test names — e.g. running the
+    // "api" suite and "./tests/api/users.spec.ts" as two targets would
+    // otherwise merge into one set of 6 Users API tests instead of 12).
+    const target = process.env.WDIO_TARGET;
+    if (target) {
+      allureReporter.addArgument('target', target);
+    }
   },
 
   afterTest(test, _context, { error, passed }) {

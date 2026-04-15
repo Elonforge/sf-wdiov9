@@ -72,4 +72,50 @@ describe('TodoMVC', () => {
     await todoPage.assertTodoCount(1);
     await todoPage.assertTodoText(0, 'Delete me');
   });
+
+  // Long-running end-to-end flow — deliberately exercises many commands so
+  // that wdio-video-reporter has plenty of frames to encode. Useful as a
+  // smoke test for the Allure video attachment in CI.
+  it('should handle a full lifecycle of adding, completing, filtering and clearing', async () => {
+    const items = [
+      'Write spec',
+      'Review PR',
+      'Deploy build',
+      'Update docs',
+      'Notify team',
+      'Archive ticket',
+      'Sync calendar',
+      'Run retro',
+    ];
+
+    for (const text of items) {
+      await todoPage.addTodo(text);
+      await browser.pause(250);
+    }
+    await todoPage.assertTodoCount(items.length);
+
+    for (let i = 0; i < items.length; i += 2) {
+      await todoPage.completeTodo(i);
+      await browser.pause(200);
+    }
+
+    await todoPage.clickFilterActive();
+    await browser.pause(300);
+    await todoPage.assertTodoCount(items.length / 2);
+
+    await todoPage.clickFilterCompleted();
+    await browser.pause(300);
+    await todoPage.assertTodoCount(items.length / 2);
+
+    await todoPage.clickFilterAll();
+    await browser.pause(300);
+    await todoPage.assertTodoCount(items.length);
+
+    await todoPage.deleteTodo(0);
+    await todoPage.deleteTodo(0);
+    await todoPage.assertTodoCount(items.length - 2);
+
+    const remaining = await todoPage.getRemainingText();
+    expect(remaining).toMatch(/\d+/);
+  });
 });
