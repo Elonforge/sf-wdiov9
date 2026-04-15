@@ -806,6 +806,25 @@ jobs:
             fi
           fi
 
+      - name: Wait for GitHub Pages to publish report
+        run: |
+          REPORT_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/runs/${{ inputs.workflow_name }}/${{ github.run_id }}/"
+          echo "Polling ${REPORT_URL} until it returns 200 (max 5 min)..."
+          DEADLINE=$(( $(date +%s) + 300 ))
+          ATTEMPT=0
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -L "${REPORT_URL}" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "✓ Report live after ${ATTEMPT} attempt(s)."
+              exit 0
+            fi
+            echo "  attempt ${ATTEMPT}: HTTP ${STATUS} — retrying in 10s"
+            sleep 10
+          done
+          echo "⚠ Timed out waiting for Pages deployment. Report may still appear shortly."
+          exit 0
+
       - name: Report URL
         run: |
           REPORT_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/runs/${{ inputs.workflow_name }}/${{ github.run_id }}/"
@@ -816,8 +835,6 @@ jobs:
             echo "## 📊 Allure Report"
             echo ""
             echo "**[▶ Open this run's report](${REPORT_URL})**"
-            echo ""
-            echo "_Note: GitHub Pages publishes the file via a follow-up \`pages build and deployment\` job (~1 min). If the link 404s, wait for that job to finish and refresh._"
             echo ""
             echo "| | |"
             echo "|---|---|"
