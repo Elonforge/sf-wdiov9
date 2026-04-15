@@ -247,19 +247,19 @@ jobs:
     if: ${{ always() && needs.merge-reports.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Only `contents: write` is needed — we publish by pushing to the gh-pages
+    # branch ourselves, not via actions/deploy-pages. That means no
+    # github-pages environment, no environment protection rules, and any
+    # branch can deploy. Configure repo Settings → Pages → "Deploy from a
+    # branch" → branch: gh-pages, folder: / (root).
     permissions:
       contents: write
-      pages: write
-      id-token: write
     # Single shared group so deploys across all callers serialise on gh-pages.
     # The caller's `concurrency_group` input is kept for backwards-compat but
     # is no longer used for ordering — all deploys contend for one slot.
     concurrency:
       group: gh-pages-deploy
       cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}runs/${{ inputs.workflow_name }}/${{ github.run_id }}/
     steps:
       - name: Download merged HTML report
         uses: actions/download-artifact@v4
@@ -806,14 +806,7 @@ jobs:
             fi
           fi
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: gh-pages/
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Report URL
+        run: |
+          echo "Report deployed via gh-pages branch."
+          echo "Stable URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/runs/${{ inputs.workflow_name }}/${{ github.run_id }}/"
