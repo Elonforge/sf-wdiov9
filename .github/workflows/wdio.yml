@@ -1,25 +1,31 @@
 name: WebDriverIO Tests
 
+# Single consolidated caller. Replaces the former wdio-smoke/wdio-api/wdio-web
+# duplicates — choose suite or supply targets via workflow_dispatch inputs.
+
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  # Manual-only by design: any tester, on any branch, can dispatch this from
+  # the Actions tab (Actions → "WebDriverIO Tests" → "Run workflow" → pick
+  # branch). This avoids polluting the published report site with a deploy
+  # for every branch push. If you want CI smoke runs on push to main, add a
+  # separate trigger here scoped to `branches: [main]`.
   workflow_dispatch:
     inputs:
       test_env:
-        description: >-
-          Environment to run tests against (e.g. dev, staging, prod).
-          Leave empty to use the default (dev).
+        description: 'Environment (dev, staging, prod).'
         required: false
         default: 'dev'
+        type: choice
+        options: [dev, staging, prod]
+      test_suite:
+        description: 'Suite(s), comma-separated. Empty = all. (e.g. web / api / web,api)'
+        required: false
+        default: ''
         type: string
       targets:
         description: >-
-          Comma-separated test targets to run in parallel.
-          Each entry can be a file (tests/web/todo.spec.ts), a directory
-          (tests/api/), or a @tag passed via --grep.
-          Leave empty to run all tests.
+          Comma-separated targets (files under ./tests/, directories, or @tags).
+          Each entry becomes a parallel matrix leg. Empty = run everything.
         required: false
         default: ''
         type: string
@@ -35,10 +41,10 @@ jobs:
     with:
       test_env: ${{ inputs.test_env || 'dev' }}
       targets: ${{ inputs.targets || '' }}
+      test_suite: ${{ inputs.test_suite || '' }}
       workflow_name: wdio
-      test_suite: ''
       artifact_prefix: blob-report
       report_artifact_name: wdio-report
       func_name: ''
       test_timeout: 30
-      concurrency_group: pages-deploy-wdio
+      concurrency_group: gh-pages-deploy

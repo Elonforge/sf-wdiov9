@@ -66,7 +66,9 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
   },
 
   // ── Retries ────────────────────────────────────────────────────────────────
-  specFileRetries: isCI ? 2 : 0,
+  // Intentionally 0 in CI so flaky tests surface in the Allure report rather
+  // than being masked by silent reruns. Investigate & fix, don't retry.
+  specFileRetries: 0,
 
   // ── Reporters ──────────────────────────────────────────────────────────────
   reporters: [
