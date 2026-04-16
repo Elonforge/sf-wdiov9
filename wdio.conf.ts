@@ -1,4 +1,4 @@
-import type { Options, Capabilities } from '@wdio/types';
+import type { Options } from '@wdio/types';
 import { config as dotenvConfig } from 'dotenv';
 import path from 'path';
 import video from 'wdio-video-reporter';
@@ -31,7 +31,15 @@ const chromeArgs = [
   ...(isHeadless ? ['--headless=new'] : []),
 ];
 
-export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCapabilities = {
+export const config: Options.Testrunner = {
+  // ── TypeScript compilation ────────────────────────────────────────────────
+  autoCompileOpts: {
+    tsNodeOpts: {
+      project: './tsconfig.json',
+      transpileOnly: true,
+    },
+  },
+
   // ── Runner ─────────────────────────────────────────────────────────────────
   runner: 'local',
 
@@ -56,7 +64,7 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
     {
       browserName: 'chrome',
       'goog:chromeOptions': { args: chromeArgs },
-    } as WebdriverIO.Capabilities,
+    },
   ],
 
   // ── Timeouts ───────────────────────────────────────────────────────────────
@@ -95,9 +103,6 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
         saveAllVideos: true,
         videoSlowdownMultiplier: 3,
         videoFormat: 'mp4',
-        // Default is 5000ms — too tight for ffmpeg on Windows CI, leaves the
-        // Allure attachment as a text stub containing the video path (Allure
-        // then serves it as video/mp4 → 0:00, unplayable). 60s is comfortable.
         videoRenderTimeout: 60_000,
       },
     ],
