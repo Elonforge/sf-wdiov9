@@ -9,8 +9,8 @@ on:
         type: choice
         options: [dev, staging, prod]
       targets:
-        description: 'Comma-separated: suite (web, api), @tag (@smoke), or spec path. Empty = all.'
-        default: ''
+        description: 'Comma-separated list of targets to run. e.g. web, api, @smoke, ./tests/web/todo.spec.ts'
+        required: true
         type: string
 
 permissions:
@@ -38,26 +38,21 @@ jobs:
           CI: 'true'
           TEST_ENV: ${{ inputs.test_env }}
         run: |
-          $Targets = "${{ inputs.targets }}"
-          if ([string]::IsNullOrWhiteSpace($Targets)) {
-            npx wdio run wdio.conf.ts
-          } else {
-            $items = $Targets -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-            foreach ($t in $items) {
-              $env:WDIO_TARGET = $t
-              if ($t.StartsWith("@")) {
-                Write-Host "Running tag: $t"
-                npx wdio run wdio.conf.ts --mochaOpts.grep $t
-              } elseif ($t.StartsWith("./tests/") -or $t.StartsWith("./test/")) {
-                if (-not ($t -match '\.\w+$')) { $t = $t.TrimEnd('/\') + "/**/*.spec.ts" }
-                Write-Host "Running spec: $t"
-                npx wdio run wdio.conf.ts --spec $t
-              } else {
-                Write-Host "Running suite: $t"
-                npx wdio run wdio.conf.ts --suite $t
-              }
-              if ($LASTEXITCODE -ne 0) { Write-Host "Target '$t' had failures — continuing" }
+          $items = "${{ inputs.targets }}" -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+          foreach ($t in $items) {
+            $env:WDIO_TARGET = $t
+            if ($t.StartsWith("@")) {
+              Write-Host "Running tag: $t"
+              npx wdio run wdio.conf.ts --mochaOpts.grep $t
+            } elseif ($t.StartsWith("./tests/") -or $t.StartsWith("./test/")) {
+              if (-not ($t -match '\.\w+$')) { $t = $t.TrimEnd('/\') + "/**/*.spec.ts" }
+              Write-Host "Running spec: $t"
+              npx wdio run wdio.conf.ts --spec $t
+            } else {
+              Write-Host "Running suite: $t"
+              npx wdio run wdio.conf.ts --suite $t
             }
+            if ($LASTEXITCODE -ne 0) { Write-Host "Target '$t' had failures — continuing" }
           }
 
       - name: Patch video stubs
@@ -118,6 +113,6 @@ jobs:
       - name: Report URL
         shell: pwsh
         run: |
-          $url = "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ github.run_id }}/"
+          $url = "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ github.run_id }}/#suites"
           "## Allure Report`n**URL:** $url" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
           Write-Host "Report: $url"
