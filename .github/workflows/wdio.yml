@@ -65,24 +65,49 @@ jobs:
             }
           }
 
-      - name: Patch video stubs
+      - name: Attach videos to Allure results
         if: always()
         shell: pwsh
         run: |
           $allureDir = "allure-results"
           $videoDir  = "_results_"
-          if ((Test-Path $allureDir) -and (Test-Path $videoDir)) {
-            $count = 0
-            Get-ChildItem $allureDir -Filter "*.mp4" | Where-Object { $_.Length -lt 1024 } | ForEach-Object {
-              $videoPath = (Get-Content $_.FullName -Raw).Trim()
-              if (Test-Path $videoPath) {
-                Copy-Item $videoPath $_.FullName -Force
-                Write-Host "Patched: $($_.Name)"
-                $count++
-              }
+          if (-not (Test-Path $allureDir) -or -not (Test-Path $videoDir)) { exit 0 }
+
+          # Patch any text-stub .mp4 files left by wdio-video-reporter
+          Get-ChildItem $allureDir -Filter "*.mp4" | Where-Object { $_.Length -lt 1024 } | ForEach-Object {
+            $videoPath = (Get-Content $_.FullName -Raw).Trim()
+            if (Test-Path $videoPath) {
+              Copy-Item $videoPath $_.FullName -Force
+              Write-Host "Patched stub: $($_.Name)"
             }
-            Write-Host "Patched $count video stub(s)"
           }
+
+          # Inject videos into result JSONs that don't already have one
+          $videos = Get-ChildItem $videoDir -Filter "*.mp4"
+          if ($videos.Count -eq 0) { Write-Host "No videos found"; exit 0 }
+
+          $attached = 0
+          Get-ChildItem $allureDir -Filter "*-result.json" | ForEach-Object {
+            $result = Get-Content $_.FullName -Raw | ConvertFrom-Json
+            $hasVideo = ($result.attachments | Where-Object { $_.type -eq "video/mp4" }).Count -gt 0
+            if ($hasVideo) { return }
+
+            $testName = $result.name -replace ' ', '-'
+            $match = $videos | Where-Object { $_.BaseName -like "*--$testName" -or $_.BaseName -eq $testName }
+            if (-not $match) { return }
+            $match = @($match)[0]
+
+            $attachId = [guid]::NewGuid().ToString()
+            $attachName = "$attachId-attachment.mp4"
+            Copy-Item $match.FullName (Join-Path $allureDir $attachName)
+
+            if (-not $result.attachments) { $result | Add-Member -NotePropertyName attachments -NotePropertyValue @() }
+            $result.attachments += @{ name = "Execution video"; source = $attachName; type = "video/mp4" }
+            $result | ConvertTo-Json -Depth 20 | Set-Content $_.FullName -Encoding utf8
+            Write-Host "Attached video to: $($result.name)"
+            $script:attached++
+          }
+          Write-Host "Attached $attached video(s) to Allure results"
 
       - name: Generate Allure report
         if: always()
