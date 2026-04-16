@@ -1,0 +1,1 @@
+{"id":"51b9995331c2bfb5f1b6899c7649036f","name":"GET /users/2 — returns 200 with id:2 and truthy email/name","status":"passed","testResultsByEnv":{"default":"f1d2db6cfe83b115f3a925676df5f4d8"}}
