@@ -1,0 +1,141 @@
+name: WDIO Tests (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      test_env:
+        description: 'Environment'
+        default: 'dev'
+        type: string
+      targets:
+        description: 'Comma-separated list of targets to run. e.g. web, api, @smoke, ./tests/web/todo.spec.ts'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare Matrix
+    runs-on: windows-latest
+    outputs:
+      matrix: ${{ steps.parse.outputs.matrix }}
+    steps:
+      - name: Parse targets into matrix
+        id: parse
+        shell: pwsh
+        run: |
+          $items = "${{ inputs.targets }}" -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+          $matrix = $items | ConvertTo-Json -Compress -AsArray
+          "matrix=$matrix" | Out-File -Append -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+          Write-Host "Targets: $matrix"
+
+  test:
+    name: "Test: ${{ matrix.target }}"
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run tests
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CI: 'true'
+          TEST_ENV: ${{ inputs.test_env }}
+          WDIO_TARGET: ${{ matrix.target }}
+        run: |
+          $t = "${{ matrix.target }}"
+          if ($t.StartsWith("@")) {
+            Write-Host "Running tag: $t"
+            npx wdio run wdio.conf.ts --mochaOpts.grep $t
+          } elseif ($t.StartsWith("./tests/") -or $t.StartsWith("./test/")) {
+            if (-not ($t -match '\.\w+$')) { $t = $t.TrimEnd('/\') + "/**/*.spec.ts" }
+            Write-Host "Running spec: $t"
+            npx wdio run wdio.conf.ts --spec $t
+          } else {
+            Write-Host "Running suite: $t"
+            npx wdio run wdio.conf.ts --suite $t
+          }
+
+      - name: Patch video stubs
+        if: always()
+        shell: pwsh
+        run: |
+          $allureDir = "allure-results"
+          $videoDir  = "_results_"
+          if ((Test-Path $allureDir) -and (Test-Path $videoDir)) {
+            $count = 0
+            Get-ChildItem $allureDir -Filter "*.mp4" | Where-Object { $_.Length -lt 1024 } | ForEach-Object {
+              $videoPath = (Get-Content $_.FullName -Raw).Trim()
+              if (Test-Path $videoPath) {
+                Copy-Item $videoPath $_.FullName -Force
+                Write-Host "Patched: $($_.Name)"
+                $count++
+              }
+            }
+            Write-Host "Patched $count video stub(s)"
+          }
+
+      - name: Upload allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-${{ strategy.job-index }}
+          path: allure-results/
+          retention-days: 1
+
+  report:
+    name: Merge Results & Deploy Report
+    needs: test
+    if: always() && !cancelled()
+    runs-on: windows-latest
+    concurrency:
+      group: gh-pages-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Download all allure results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: allure-results-*
+          path: allure-results
+          merge-multiple: true
+
+      - name: Generate Allure report
+        shell: pwsh
+        run: npx allure generate allure-results -o allure-report
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report/
+          retention-days: 30
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./allure-report
+          destination_dir: ${{ github.run_id }}
+          keep_files: true
+
+      - name: Report URL
+        shell: pwsh
+        run: |
+          $url = "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ github.run_id }}/#suites"
+          "## Allure Report`n**URL:** $url" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          Write-Host "Report: $url"
