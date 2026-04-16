@@ -1,6 +1,7 @@
 import type { Options } from '@wdio/types';
 import { config as dotenvConfig } from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import allureReporter from '@wdio/allure-reporter';
 
 // ── dotenv fallback chain ────────────────────────────────────────────────────
@@ -152,5 +153,29 @@ export const config: Options.Testrunner = {
   onComplete(_exitCode, _config, _capabilities, results) {
     const failed = (results as { failed?: number }).failed ?? 0;
     console.log(`\n✅  Run complete | Failures: ${failed}\n`);
+
+    // ── Video → Allure attachment fix ──────────────────────────────────────
+    // wdio-video-reporter v5 creates text-stub attachments in allure-results
+    // (containing the video file path) and replaces them with actual mp4
+    // binaries in its `onExit` handler. That handler depends on detecting
+    // the allure reporter via runner.instanceOptions — which can fail when
+    // WDIO resolves reporter names to full package paths. This fallback
+    // scans for any remaining stubs and patches them reliably.
+    const allureDir = path.resolve('allure-results');
+    const videoDir = path.resolve('_results_');
+    if (fs.existsSync(allureDir) && fs.existsSync(videoDir)) {
+      const stubs = fs.readdirSync(allureDir)
+        .filter(f => f.endsWith('.mp4'))
+        .map(f => path.resolve(allureDir, f))
+        .filter(f => fs.statSync(f).size < 1024);
+
+      for (const stubPath of stubs) {
+        const videoPath = fs.readFileSync(stubPath, 'utf8').trim();
+        if (fs.existsSync(videoPath)) {
+          fs.copyFileSync(videoPath, stubPath);
+          console.log(`  📹 Patched video stub: ${path.basename(stubPath)}`);
+        }
+      }
+    }
   },
 };

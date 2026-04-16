@@ -145,6 +145,31 @@ jobs:
             npx wdio run wdio.conf.ts --suite $Target
           }
 
+      - name: Patch video stubs in Allure results
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          # wdio-video-reporter writes text-stub .mp4 files in allure-results
+          # containing the path to the actual video. Replace any remaining
+          # stubs with the real video binaries so Allure can play them.
+          $allureDir = "allure-results"
+          $videoDir  = "_results_"
+          if ((Test-Path $allureDir) -and (Test-Path $videoDir)) {
+            $stubs = Get-ChildItem $allureDir -Filter "*.mp4" |
+                     Where-Object { $_.Length -lt 1024 }
+            foreach ($stub in $stubs) {
+              $videoPath = (Get-Content $stub.FullName -Raw).Trim()
+              if (Test-Path $videoPath) {
+                Copy-Item $videoPath $stub.FullName -Force
+                Write-Host "Patched video stub: $($stub.Name)"
+              }
+            }
+            $patched = ($stubs | Measure-Object).Count
+            Write-Host "Patched $patched video stub(s)"
+          } else {
+            Write-Host "No allure-results or _results_ directory found, skipping"
+          }
+
       - name: Upload blob report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
