@@ -1,0 +1,1 @@
+{"id":"dbcc9f294859fba7bbedee96e717b3b7","name":"GET /users — returns 200, non-empty array with id/email/name","status":"passed","testResultsByEnv":{"default":"096fe5ad36e2ea9a8c9c4defac594bc7"}}
