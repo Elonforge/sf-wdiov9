@@ -8,10 +8,9 @@
     "resolveJsonModule": true,
     "outDir": "dist",
     "rootDir": ".",
-    "baseUrl": ".",
     "types": ["node", "mocha", "@wdio/globals/types"],
     "paths": {
-      "@pages/*": ["pages/*"]
+      "@pages/*": ["./pages/*"]
     },
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true

@@ -97,8 +97,10 @@ export class TodoPage extends BasePage {
   // ── Assertions ─────────────────────────────────────────────────────────────
 
   async assertTodoCount(expected: number): Promise<void> {
-    const count = await this.getTodoCount();
-    expect(count).toBe(expected);
+    await browser.waitUntil(
+      async () => (await this.getTodoCount()) === expected,
+      { timeout: 5_000, timeoutMsg: `Expected ${expected} todos but found ${await this.getTodoCount()}` },
+    );
   }
 
   async assertTodoText(index: number, text: string): Promise<void> {
