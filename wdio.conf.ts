@@ -1,7 +1,6 @@
 import type { Options } from '@wdio/types';
 import { config as dotenvConfig } from 'dotenv';
 import path from 'path';
-import video from 'wdio-video-reporter';
 import allureReporter from '@wdio/allure-reporter';
 
 // ── dotenv fallback chain ────────────────────────────────────────────────────
@@ -97,7 +96,7 @@ export const config: Options.Testrunner = {
       },
     ],
     [
-      video,
+      'video',
       {
         outputDir: '_results_',
         saveAllVideos: true,
