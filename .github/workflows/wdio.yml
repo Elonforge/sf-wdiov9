@@ -82,7 +82,7 @@ jobs:
       - name: Generate Allure report
         if: always()
         shell: pwsh
-        run: npx allure generate allure-results -o allure-report --clean
+        run: npx allure generate allure-results -o allure-report
 
       - name: Upload report artifact
         if: always()
