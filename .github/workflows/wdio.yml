@@ -24,6 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -82,7 +87,7 @@ jobs:
       - name: Generate Allure report
         if: always()
         shell: pwsh
-        run: npx allure generate allure-results -o allure-report
+        run: npx allure generate allure-results -o allure-report --clean
 
       - name: Upload report artifact
         if: always()
