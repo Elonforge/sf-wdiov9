@@ -137,7 +137,33 @@ jobs:
           name: allure-report
           path: allure-report
 
-      - name: Deploy to GitHub Pages
+      - name: Create root index.html redirect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "allure-report-root" -Force | Out-Null
+          $reportPath = "${{ github.run_id }}"
+          @"
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <meta http-equiv="refresh" content="0; url=$reportPath/">
+            <title>Allure Report</title>
+          </head>
+          <body>
+            <p>Redirecting to <a href="$reportPath/">latest report</a>...</p>
+          </body>
+          </html>
+          "@ | Set-Content "allure-report-root/index.html" -Encoding utf8
+
+      - name: Deploy root redirect
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./allure-report-root
+          keep_files: true
+
+      - name: Deploy report
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
