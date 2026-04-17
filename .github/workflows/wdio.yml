@@ -12,6 +12,11 @@ on:
         description: 'Comma-separated targets: suite name (web, api), @tag (@smoke), or spec path (./tests/web/todo.spec.ts). Leave empty to run all.'
         default: ''
         type: string
+      browser:
+        description: 'Browser mode'
+        default: 'chrome_headless'
+        type: choice
+        options: [chrome, chrome_headless]
 
 permissions:
   contents: write
@@ -51,6 +56,7 @@ jobs:
         env:
           CI: 'true'
           TEST_ENV: ${{ inputs.test_env }}
+          HEADLESS: ${{ inputs.browser == 'chrome_headless' && 'true' || 'false' }}
         run: |
           $TargetTests = "${{ inputs.target_tests }}"
 
