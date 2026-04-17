@@ -194,23 +194,18 @@ export const config: Options.Testrunner = {
       const existingAttachments: Array<{ type?: string }> = result.attachments ?? [];
       if (existingAttachments.some(a => a.type === 'video/mp4')) continue;
 
-      // Build a normalized name to match against video filenames
-      // Video files are named: SuiteTitle--TestTitle.mp4 (spaces → dashes)
-      const testFullName = [
-        ...(result.labels ?? [])
-          .filter((l: { name: string }) => l.name === 'suite' || l.name === 'parentSuite')
-          .map((l: { value: string }) => l.value),
-        result.name,
-      ]
-        .filter(Boolean)
-        .join('--')
+      // Build a normalized name to match against video filenames.
+      // wdio-video-reporter v5 names files: <testTitle>-<cid>--<BROWSER>--<timestamp>.mp4
+      // where spaces → dashes, commas and special chars are stripped.
+      const normalizedTestName = (result.name ?? '')
+        .replace(/[^a-zA-Z0-9 -]/g, '')
         .replace(/ /g, '-')
-        .replace(/-{2,}/g, '-');
+        .replace(/-{2,}/g, '-')
+        .toLowerCase();
 
       const match = videos.find(v => {
-        const vName = v.name.replace(/\.mp4$/, '');
-        return vName === testFullName
-          || vName.endsWith(`--${(result.name ?? '').replace(/ /g, '-')}`);
+        const vName = v.name.replace(/\.mp4$/, '').toLowerCase();
+        return vName.startsWith(normalizedTestName);
       });
 
       if (match) {

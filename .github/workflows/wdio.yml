@@ -92,8 +92,10 @@ jobs:
             $hasVideo = ($result.attachments | Where-Object { $_.type -eq "video/mp4" }).Count -gt 0
             if ($hasVideo) { return }
 
-            $testName = $result.name -replace ' ', '-'
-            $match = $videos | Where-Object { $_.BaseName -like "*--$testName" -or $_.BaseName -eq $testName }
+            # wdio-video-reporter v5 names files: <testTitle>-<cid>--<BROWSER>--<timestamp>.mp4
+            # Normalize: strip non-alphanumeric (except spaces/dashes), then spaces to dashes
+            $testName = ($result.name -replace '[^a-zA-Z0-9 -]', '' -replace ' ', '-' -replace '-{2,}', '-').ToLower()
+            $match = $videos | Where-Object { $_.BaseName.ToLower().StartsWith($testName) }
             if (-not $match) { return }
             $match = @($match)[0]
 
