@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       test_env:
-        description: 'Environment'
+        description: 'Test environment'
         default: 'dev'
         type: choice
         options: [dev, staging, prod]
-      targets:
-        description: 'Comma-separated: suite (web, api), @tag (@smoke), or spec path. Empty = all.'
+      target_tests:
+        description: 'Comma-separated targets: suite name (web, api), @tag (@smoke), or spec path (./tests/web/todo.spec.ts). Leave empty to run all.'
         default: ''
         type: string
 
@@ -17,25 +17,34 @@ permissions:
   contents: write
 
 jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 1: Run tests and generate Allure report with videos
+  # ────────────────────────────────────────────────────────────────────────────
   test:
-    name: Run Tests & Generate Report
+    name: Run Tests
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java (required by Allure CLI)
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
-      - run: npm ci
+      - name: Install dependencies
+        shell: pwsh
+        run: npm ci
 
+      # ── Run tests ────────────────────────────────────────────────────────────
       - name: Run tests
         continue-on-error: true
         shell: pwsh
@@ -43,80 +52,124 @@ jobs:
           CI: 'true'
           TEST_ENV: ${{ inputs.test_env }}
         run: |
-          $Targets = "${{ inputs.targets }}"
-          if ([string]::IsNullOrWhiteSpace($Targets)) {
+          $TargetTests = "${{ inputs.target_tests }}"
+
+          if ([string]::IsNullOrWhiteSpace($TargetTests)) {
+            Write-Host "No targets specified - running all tests"
             npx wdio run wdio.conf.ts
-          } else {
-            $items = $Targets -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-            foreach ($t in $items) {
-              $env:WDIO_TARGET = $t
-              if ($t.StartsWith("@")) {
-                Write-Host "Running tag: $t"
-                npx wdio run wdio.conf.ts --mochaOpts.grep $t
-              } elseif ($t.StartsWith("./tests/") -or $t.StartsWith("./test/")) {
-                if (-not ($t -match '\.\w+$')) { $t = $t.TrimEnd('/\') + "/**/*.spec.ts" }
-                Write-Host "Running spec: $t"
-                npx wdio run wdio.conf.ts --spec $t
-              } else {
-                Write-Host "Running suite: $t"
-                npx wdio run wdio.conf.ts --suite $t
+          }
+          else {
+            $items = $TargetTests -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+
+            foreach ($target in $items) {
+              $env:WDIO_TARGET = $target
+
+              if ($target.StartsWith("@")) {
+                # Tag-based run: @smoke, @regression, etc.
+                Write-Host "Running tag: $target"
+                npx wdio run wdio.conf.ts --mochaOpts.grep $target
               }
-              if ($LASTEXITCODE -ne 0) { Write-Host "Target '$t' had failures — continuing" }
+              elseif ($target.StartsWith("./tests") -or $target.StartsWith("./test")) {
+                # Spec file path: ./tests/web/todo.spec.ts
+                # If no file extension, treat as a directory glob
+                if (-not ($target -match '\.\w+$')) {
+                  $target = $target.TrimEnd('/\') + "/**/*.spec.ts"
+                }
+                Write-Host "Running spec: $target"
+                npx wdio run wdio.conf.ts --spec $target
+              }
+              else {
+                # Suite name: web, api, etc.
+                Write-Host "Running suite: $target"
+                npx wdio run wdio.conf.ts --suite $target
+              }
+
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "Target '$target' had failures - continuing with next target"
+              }
             }
           }
 
+      # ── Attach videos to Allure result JSONs ────────────────────────────────
       - name: Attach videos to Allure results
         if: always()
         shell: pwsh
         run: |
           $allureDir = "allure-results"
           $videoDir  = "_results_"
-          if (-not (Test-Path $allureDir) -or -not (Test-Path $videoDir)) { exit 0 }
 
-          # Patch any text-stub .mp4 files left by wdio-video-reporter
+          if (-not (Test-Path $allureDir) -or -not (Test-Path $videoDir)) {
+            Write-Host "Missing allure-results or _results_ directory - skipping"
+            exit 0
+          }
+
+          # Step 1: Patch any text-stub .mp4 files left by wdio-video-reporter
           Get-ChildItem $allureDir -Filter "*.mp4" | Where-Object { $_.Length -lt 1024 } | ForEach-Object {
-            $videoPath = (Get-Content $_.FullName -Raw).Trim()
-            if (Test-Path $videoPath) {
-              Copy-Item $videoPath $_.FullName -Force
+            $content = (Get-Content $_.FullName -Raw).Trim()
+            if (Test-Path $content) {
+              Copy-Item $content $_.FullName -Force
               Write-Host "Patched stub: $($_.Name)"
             }
           }
 
-          # Inject videos into result JSONs that don't already have one
+          # Step 2: Collect all video files
           $videos = Get-ChildItem $videoDir -Filter "*.mp4"
-          if ($videos.Count -eq 0) { Write-Host "No videos found"; exit 0 }
+          if ($videos.Count -eq 0) {
+            Write-Host "No videos found in $videoDir"
+            exit 0
+          }
+          Write-Host "Found $($videos.Count) video(s) in $videoDir"
 
+          # Step 3: Match videos to allure result JSONs and attach them
+          # wdio-video-reporter v5 names files: <testTitle-kebab>-<cid>--<BROWSER>--<timestamp>.mp4
+          # We normalize the test name the same way and do a startsWith match.
           $attached = 0
+
           Get-ChildItem $allureDir -Filter "*-result.json" | ForEach-Object {
             $result = Get-Content $_.FullName -Raw | ConvertFrom-Json
-            $hasVideo = ($result.attachments | Where-Object { $_.type -eq "video/mp4" }).Count -gt 0
+
+            # Skip if already has a video attachment
+            $hasVideo = $false
+            if ($result.attachments) {
+              $hasVideo = ($result.attachments | Where-Object { $_.type -eq "video/mp4" }).Count -gt 0
+            }
             if ($hasVideo) { return }
 
-            # wdio-video-reporter v5 names files: <testTitle>-<cid>--<BROWSER>--<timestamp>.mp4
-            # Normalize: strip non-alphanumeric (except spaces/dashes), then spaces to dashes
+            # Normalize test name: strip special chars, spaces to dashes, lowercase
             $testName = ($result.name -replace '[^a-zA-Z0-9 -]', '' -replace ' ', '-' -replace '-{2,}', '-').ToLower()
+
             $match = $videos | Where-Object { $_.BaseName.ToLower().StartsWith($testName) }
             if (-not $match) { return }
             $match = @($match)[0]
 
-            $attachId = [guid]::NewGuid().ToString()
+            # Copy video into allure-results with a unique attachment name
+            $attachId   = [guid]::NewGuid().ToString()
             $attachName = "$attachId-attachment.mp4"
             Copy-Item $match.FullName (Join-Path $allureDir $attachName)
 
-            if (-not $result.attachments) { $result | Add-Member -NotePropertyName attachments -NotePropertyValue @() }
+            # Patch the result JSON with the video attachment
+            if (-not $result.attachments) {
+              $result | Add-Member -NotePropertyName attachments -NotePropertyValue @()
+            }
             $result.attachments += @{ name = "Execution video"; source = $attachName; type = "video/mp4" }
             $result | ConvertTo-Json -Depth 20 | Set-Content $_.FullName -Encoding utf8
+
             Write-Host "Attached video to: $($result.name)"
             $script:attached++
           }
+
           Write-Host "Attached $attached video(s) to Allure results"
 
+      # ── Generate Allure report ───────────────────────────────────────────────
       - name: Generate Allure report
         if: always()
         shell: pwsh
-        run: npx allure generate allure-results -o allure-report --clean
+        run: |
+          npx allure generate allure-results -o allure-report --clean
+          Write-Host "Allure report generated in allure-report/"
 
-      - name: Upload report artifact
+      # ── Upload report as artifact ────────────────────────────────────────────
+      - name: Upload Allure report artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -124,6 +177,9 @@ jobs:
           path: allure-report/
           retention-days: 30
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # Job 2: Deploy Allure report to GitHub Pages
+  # ────────────────────────────────────────────────────────────────────────────
   deploy:
     name: Deploy to GitHub Pages
     needs: test
@@ -133,39 +189,40 @@ jobs:
       group: gh-pages-deploy
       cancel-in-progress: false
     steps:
-      - name: Download report
+      - name: Download Allure report artifact
         uses: actions/download-artifact@v4
         with:
           name: allure-report
           path: allure-report
 
-      - name: Create root index.html redirect
+      - name: Create root redirect page
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path "allure-report-root" -Force | Out-Null
-          $reportPath = "${{ github.run_id }}"
+          New-Item -ItemType Directory -Path "deploy-root" -Force | Out-Null
+          $runId = "${{ github.run_id }}"
+
           @"
           <!DOCTYPE html>
           <html>
           <head>
             <meta charset="utf-8">
-            <meta http-equiv="refresh" content="0; url=$reportPath/">
+            <meta http-equiv="refresh" content="0; url=$runId/">
             <title>Allure Report</title>
           </head>
           <body>
-            <p>Redirecting to <a href="$reportPath/">latest report</a>...</p>
+            <p>Redirecting to <a href="$runId/">latest report</a>...</p>
           </body>
           </html>
-          "@ | Set-Content "allure-report-root/index.html" -Encoding utf8
+          "@ | Set-Content "deploy-root/index.html" -Encoding utf8
 
-      - name: Deploy root redirect
+      - name: Deploy root redirect to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./allure-report-root
+          publish_dir: ./deploy-root
           keep_files: true
 
-      - name: Deploy report
+      - name: Deploy Allure report to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -173,9 +230,13 @@ jobs:
           destination_dir: ${{ github.run_id }}
           keep_files: true
 
-      - name: Report URL
+      - name: Print report URL
         shell: pwsh
         run: |
-          $url = "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/${{ github.run_id }}/"
+          $owner = "${{ github.repository_owner }}"
+          $repo  = "${{ github.event.repository.name }}"
+          $runId = "${{ github.run_id }}"
+          $url   = "https://$owner.github.io/$repo/$runId/"
+
           "## Allure Report`n**URL:** $url" | Out-File -Append -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8
-          Write-Host "Report: $url"
+          Write-Host "Report URL: $url"
