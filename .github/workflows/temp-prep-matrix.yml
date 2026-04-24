@@ -1,0 +1,21 @@
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Set matrix from input
+        id: set-matrix
+        run: |
+          IFS=',' read -ra TESTS <<< "${{ inputs.targetTestss_param }}"
+          JSON='{"include":['
+          for test in "${TESTS[@]}"; do
+            t="$(echo "$test" | xargs)"
+            jobId="$(echo "$t" | sed -E 's|[^a-zA-Z0-9]+|-|g; s|^-+||; s|-+$||')"
+            JSON+="{\"testPath\":\"${t}\",\"jobId\":\"${jobId}\"},"
+          done
+          JSON="${JSON%,}]}"
+          echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
