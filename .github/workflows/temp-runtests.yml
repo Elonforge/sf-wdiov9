@@ -1,0 +1,22 @@
+run_tests:
+    needs: prepare-matrix
+    runs-on: [self-hosted, win-sf-vms]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      # ... your existing steps (checkout, secrets, WDIO run) ...
+
+      - name: Generate Allure Report
+        if: always()
+        shell: powershell -ExecutionPolicy Bypass -Command ". '{0}'"
+        run: |
+          allure generate ./_results_/allure-results --clean -o allure-report
+
+      - name: Upload Allure report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report-${{ matrix.jobId }}
+          path: allure-report/
+          retention-days: 30
