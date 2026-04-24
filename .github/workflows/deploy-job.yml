@@ -1,0 +1,63 @@
+deploy:
+    name: Deploy to GitHub Pages
+    needs: [prepare-matrix, run_tests]
+    if: always() && needs.run_tests.result != 'cancelled'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download all Allure report artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: allure-report-*
+          path: downloaded-reports
+
+      - name: Prepare Pages content
+        shell: bash
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "site/${RUN_ID}"
+          shopt -s nullglob
+          for dir in downloaded-reports/allure-report-*; do
+            jobId="$(basename "$dir" | sed 's/^allure-report-//')"
+            mkdir -p "site/${RUN_ID}/${jobId}"
+            cp -R "$dir"/. "site/${RUN_ID}/${jobId}/" || true
+          done
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Write Allure Reports summary
+        shell: bash
+        env:
+          MATRIX_JSON: ${{ needs.prepare-matrix.outputs.matrix }}
+          PAGE_URL:    ${{ steps.deployment.outputs.page_url }}
+          RUN_ID:      ${{ github.run_id }}
+        run: |
+          BASE="${PAGE_URL%/}/${RUN_ID}"
+          {
+            echo "## Allure Report"
+            echo ""
+            echo "Run ID: \`${RUN_ID}\`"
+            echo ""
+            echo "| Name | Target Test | Report |"
+            echo "|------|-------------|--------|"
+            echo "$MATRIX_JSON" | jq -r --arg base "$BASE" \
+              '.include[] | "| Report - \(.jobId) | `\(.testPath)` | [View](\($base)/\(.jobId)/) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
